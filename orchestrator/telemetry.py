@@ -52,7 +52,7 @@ anyone is using the project. Payload: random install_id, version,
 OS family, timestamp. No IPs, no prompts, no code, no file paths.
 Disable: Monitor page toggle, or XYLOCOPA_TELEMETRY=0 env var,
 or telemetry=false in ~/.xylocopa/config.yaml.
-See: https://github.com/jyao97/xylocopa#telemetry
+See: https://github.com/jianpengyao/xylocopa#telemetry
 ----------------------------------------------------------------
 """
 

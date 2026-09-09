@@ -4,7 +4,7 @@
 
 Please do not open a public issue for security problems.
 
-Use GitHub's private vulnerability reporting instead: [Report a vulnerability](https://github.com/jyao97/xylocopa/security/advisories/new) (repository **Security** tab → **Report a vulnerability**). Include reproduction steps and the version you tested (`git describe --tags` or the version shown in Monitor). You will get a response within a week.
+Use GitHub's private vulnerability reporting instead: [Report a vulnerability](https://github.com/jianpengyao/xylocopa/security/advisories/new) (repository **Security** tab → **Report a vulnerability**). Include reproduction steps and the version you tested (`git describe --tags` or the version shown in Monitor). You will get a response within a week.
 
 ## Deployment model
 

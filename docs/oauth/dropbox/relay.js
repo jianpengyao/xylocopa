@@ -5,7 +5,7 @@
  *
  *   Hop 1 ("start"):
  *     The user's xylocopa instance links here with a fragment:
- *       https://jyao97.github.io/xylocopa/oauth/dropbox/#return=<origin>&authorize=<url>
+ *       https://jianpengyao.github.io/xylocopa/oauth/dropbox/#return=<origin>&authorize=<url>
  *     We store the origin in localStorage (so it survives the redirect), then
  *     navigate the browser to the Dropbox authorize URL.
  *

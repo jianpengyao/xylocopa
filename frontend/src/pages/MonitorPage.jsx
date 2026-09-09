@@ -494,7 +494,7 @@ export default function MonitorPage({ theme, onToggleTheme }) {
                 A simple anonymous heartbeat helps me know the project is being used.
                 No IPs, prompts, code, or paths.{" "}
                 <a
-                  href="https://github.com/jyao97/xylocopa#telemetry"
+                  href="https://github.com/jianpengyao/xylocopa#telemetry"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-accent hover:underline"

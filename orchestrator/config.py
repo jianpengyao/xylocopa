@@ -112,7 +112,7 @@ DROPBOX_DEFAULT_APP_KEY = "zw5krsh35r7bxpr"
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "") or DROPBOX_DEFAULT_APP_KEY
 # Fixed return page registered on the project app. Users who bring their own app can
 # self-host a copy and point this at it, or leave it empty to use direct redirects.
-DROPBOX_RELAY_URL = os.getenv("DROPBOX_RELAY_URL", "https://jyao97.github.io/xylocopa/oauth/dropbox/")
+DROPBOX_RELAY_URL = os.getenv("DROPBOX_RELAY_URL", "https://jianpengyao.github.io/xylocopa/oauth/dropbox/")
 DROPBOX_USING_DEFAULT_APP = not os.getenv("DROPBOX_APP_KEY", "")
 
 # Auth

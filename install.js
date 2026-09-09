@@ -152,7 +152,7 @@ async function main() {
         failWithInstallHint(['git']);
       }
       info(`Cloning Xylocopa to ${ROOT}...`);
-      run(`git clone https://github.com/jyao97/xylocopa.git "${ROOT}"`);
+      run(`git clone https://github.com/jianpengyao/xylocopa.git "${ROOT}"`);
       info('Repository cloned');
     }
   }

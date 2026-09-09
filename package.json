@@ -18,11 +18,11 @@
     "orchestrator",
     "installer"
   ],
-  "author": "jyao97",
+  "author": "jianpengyao",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jyao97/xylocopa.git"
+    "url": "https://github.com/jianpengyao/xylocopa.git"
   },
   "engines": {
     "node": ">=18"

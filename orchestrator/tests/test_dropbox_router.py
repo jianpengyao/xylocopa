@@ -643,7 +643,7 @@ async def test_link_start_auto_resolves_relay_with_default_key(client, sync_dir,
     from dropbox_sync import engine
     monkeypatch.setattr(config, "DROPBOX_APP_KEY", "defaultkey1234")
     monkeypatch.setattr(config, "DROPBOX_USING_DEFAULT_APP", True)
-    monkeypatch.setattr(config, "DROPBOX_RELAY_URL", "https://jyao97.github.io/xylocopa/oauth/dropbox/")
+    monkeypatch.setattr(config, "DROPBOX_RELAY_URL", "https://jianpengyao.github.io/xylocopa/oauth/dropbox/")
 
     resp = await client.post(
         "/api/dropbox/link/start",
@@ -653,10 +653,10 @@ async def test_link_start_auto_resolves_relay_with_default_key(client, sync_dir,
     assert resp.status_code == 200
     data = resp.json()
     assert data["mode"] == "relay"
-    assert data["redirect_uri"] == "https://jyao97.github.io/xylocopa/oauth/dropbox/"
+    assert data["redirect_uri"] == "https://jianpengyao.github.io/xylocopa/oauth/dropbox/"
     assert "relay_start_url" in data
     # relay_start_url is relay_url + "#" + urlencode(...)
-    assert data["relay_start_url"].startswith("https://jyao97.github.io/xylocopa/oauth/dropbox/#")
+    assert data["relay_start_url"].startswith("https://jianpengyao.github.io/xylocopa/oauth/dropbox/#")
     # Fragment must contain return= and authorize=, both percent-encoded
     fragment = data["relay_start_url"].split("#", 1)[1]
     assert "return=" in fragment
@@ -695,7 +695,7 @@ async def test_relay_start_url_encoding(client, sync_dir, monkeypatch):
     import config
     monkeypatch.setattr(config, "DROPBOX_APP_KEY", "relaytest12345")
     monkeypatch.setattr(config, "DROPBOX_USING_DEFAULT_APP", True)
-    monkeypatch.setattr(config, "DROPBOX_RELAY_URL", "https://jyao97.github.io/xylocopa/oauth/dropbox/")
+    monkeypatch.setattr(config, "DROPBOX_RELAY_URL", "https://jianpengyao.github.io/xylocopa/oauth/dropbox/")
 
     resp = await client.post(
         "/api/dropbox/link/start",
@@ -740,7 +740,7 @@ async def test_callback_works_with_relay_redirect_uri(client, sync_dir, fake):
     engine._link_flow = flow
 
     # Start the flow with the relay URL as redirect_uri
-    relay_url = "https://jyao97.github.io/xylocopa/oauth/dropbox/"
+    relay_url = "https://jianpengyao.github.io/xylocopa/oauth/dropbox/"
     result = flow.start("abcdefghij1234",
                         redirect_uri=relay_url,
                         return_to="/projects/myproj")
@@ -772,13 +772,13 @@ async def test_status_includes_link_mode_and_relay_url(client, sync_dir, monkeyp
     from dropbox_sync import engine
     monkeypatch.setattr(engine, "DROPBOX_APP_KEY", "statuskey12345")
     monkeypatch.setattr(engine, "DROPBOX_USING_DEFAULT_APP", True)
-    monkeypatch.setattr(engine, "DROPBOX_RELAY_URL", "https://jyao97.github.io/xylocopa/oauth/dropbox/")
+    monkeypatch.setattr(engine, "DROPBOX_RELAY_URL", "https://jianpengyao.github.io/xylocopa/oauth/dropbox/")
 
     resp = await client.get("/api/dropbox/status")
     assert resp.status_code == 200
     data = resp.json()
     assert data["link_mode"] == "relay"
-    assert data["relay_url"] == "https://jyao97.github.io/xylocopa/oauth/dropbox/"
+    assert data["relay_url"] == "https://jianpengyao.github.io/xylocopa/oauth/dropbox/"
 
 
 @pytest.mark.anyio
@@ -815,7 +815,7 @@ async def test_project_status_includes_link_mode(client, sync_dir, db_session, m
     from dropbox_sync import engine
     monkeypatch.setattr(engine, "DROPBOX_APP_KEY", "projstatuskey1")
     monkeypatch.setattr(engine, "DROPBOX_USING_DEFAULT_APP", True)
-    monkeypatch.setattr(engine, "DROPBOX_RELAY_URL", "https://jyao97.github.io/xylocopa/oauth/dropbox/")
+    monkeypatch.setattr(engine, "DROPBOX_RELAY_URL", "https://jianpengyao.github.io/xylocopa/oauth/dropbox/")
 
     from models import Project
 

@@ -173,7 +173,7 @@ Three link modes are available; `POST /api/dropbox/link/start` with
 ### Relay mode (default for the project app)
 
 The project ships a fixed redirect URI page at
-`https://jyao97.github.io/xylocopa/oauth/dropbox/` (source:
+`https://jianpengyao.github.io/xylocopa/oauth/dropbox/` (source:
 `docs/oauth/dropbox/index.html`). Any self-hosted xylocopa instance can
 link without registering its own redirect URI.
 
@@ -248,7 +248,7 @@ nor a registered redirect URI is available.
 
 ### Maintainer notes
 
-- Register `https://jyao97.github.io/xylocopa/oauth/dropbox/` as a
+- Register `https://jianpengyao.github.io/xylocopa/oauth/dropbox/` as a
   redirect URI on the project Dropbox app.
 - Dropbox production status is required once the app exceeds 50 linked
   users.

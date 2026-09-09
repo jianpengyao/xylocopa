@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> Each entry mirrors the corresponding [GitHub release](https://github.com/jyao97/xylocopa/releases) — see those pages for the full prose write-up. This file keeps the same content in Keep-a-Changelog form so it's grep-able from a clone.
+> Each entry mirrors the corresponding [GitHub release](https://github.com/jianpengyao/xylocopa/releases) — see those pages for the full prose write-up. This file keeps the same content in Keep-a-Changelog form so it's grep-able from a clone.
 
 ## [Unreleased]
 
@@ -567,8 +567,8 @@ Realtime sync fixes — close the WS gaps where mutations took up to 5 s to land
 
 ### Added
 
-- **Context usage pill** on the chat header. Live per-agent context-window meter with a tap-to-expand breakdown (system / tools / MCP / messages / cache split, free vs. used). Counts come straight from the Claude Code session JSONL, not estimated. Inline suggestions appear when usage gets high. Pushed over WebSocket and persisted on the agent row so the value paints immediately on chat open. Resolves [#3](https://github.com/jyao97/xylocopa/issues/3) point 1.
-- **System / meta-agents on `.xylo-internal`.** System-level sessions (Task-AI, merge agents, insights generation, etc.) are now hosted on a synthetic `.xylo-internal` project placeholder — they no longer need to be bound to a real project to run. Templates (`CLAUDE.md`, `PROGRESS.md`, agent-hooks JSON) moved to `.xylo-internal/templates/` and loaders fail-fast if `PROJECTS_DIR` is unset. Resolves [#3](https://github.com/jyao97/xylocopa/issues/3) point 4.
+- **Context usage pill** on the chat header. Live per-agent context-window meter with a tap-to-expand breakdown (system / tools / MCP / messages / cache split, free vs. used). Counts come straight from the Claude Code session JSONL, not estimated. Inline suggestions appear when usage gets high. Pushed over WebSocket and persisted on the agent row so the value paints immediately on chat open. Resolves [#3](https://github.com/jianpengyao/xylocopa/issues/3) point 1.
+- **System / meta-agents on `.xylo-internal`.** System-level sessions (Task-AI, merge agents, insights generation, etc.) are now hosted on a synthetic `.xylo-internal` project placeholder — they no longer need to be bound to a real project to run. Templates (`CLAUDE.md`, `PROGRESS.md`, agent-hooks JSON) moved to `.xylo-internal/templates/` and loaders fail-fast if `PROJECTS_DIR` is unset. Resolves [#3](https://github.com/jianpengyao/xylocopa/issues/3) point 4.
 - **E-ink display mode.** Manual toggle in **Settings → Display**, plus user-agent auto-detect for BOOX / Onyx / Kindle / Bigme / Hisense / Meebook / iReader. Flattens glass surfaces to a single page color, collapses colored badges/tags to grayscale, switches saturated bubbles to outlined style, drops gradients, and bumps secondary-text weight for readable contrast on e-paper. Includes an `?eink-diag=1` overlay for on-device detection debugging and an auto-fullscreen step on first toggle.
 - **Subagent visibility.** Sub-sessions spawned via Claude Code's `Agent` tool are now discovered under `<session>/subagents/` and surfaced as a Task → Xylo session → CC session → Sub-session hierarchy in the UI; receiver-side filter on the Agents page hides synthetic subagent rows from the main list while preserving the parent linkage in chat.
 - **Lifetime cost tracking** for xylo-agents. Per-agent cumulative spend, deduped by message id (so resumes don't double-count), with corrected Opus prices and 5m / 1h cache-read split.
@@ -1178,7 +1178,7 @@ This release fixes a long-standing issue where an expired Anthropic OAuth access
 
 ### Changed
 
-- **Rebrand AgentHive → Xylocopa.** Backend renamed with `agenthive` compat shims; frontend rebrand with localStorage migration (`agenthive_*` → `xylo_*`); CLI / installer / scripts renamed (`ah` → `xy`). Tmux pane prefix switched to `xy-{agent_id[:8]}`; legacy `ah-` sessions still recognized. GitHub repo moved to `jyao97/xylocopa`. Bee mascot (carpenter bee, *Xylocopa*) replaces robot icon; PWA icons regenerated.
+- **Rebrand AgentHive → Xylocopa.** Backend renamed with `agenthive` compat shims; frontend rebrand with localStorage migration (`agenthive_*` → `xylo_*`); CLI / installer / scripts renamed (`ah` → `xy`). Tmux pane prefix switched to `xy-{agent_id[:8]}`; legacy `ah-` sessions still recognized. GitHub repo moved to `jianpengyao/xylocopa`. Bee mascot (carpenter bee, *Xylocopa*) replaces robot icon; PWA icons regenerated.
 - LaTeX math rendering via KaTeX in the chat view.
 - Media file extraction from tool-usage entries (absolute paths supported) for inline preview.
 - All images render via `FileAttachments` thumbnails; inline duplicates suppressed.

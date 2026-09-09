@@ -67,9 +67,9 @@ def test_migrates_name_only_when_email_custom(tmp_path):
 
 
 def test_leaves_user_set_identity_alone(tmp_path):
-    repo = _repo(tmp_path, "custom", user_name="jyao97 and Claude", user_email="me@example.com")
+    repo = _repo(tmp_path, "custom", user_name="jianpengyao and Claude", user_email="me@example.com")
     assert GitManager().migrate_legacy_identity(str(repo)) is False
-    assert _git(repo, "config", "--local", "user.name") == "jyao97 and Claude"
+    assert _git(repo, "config", "--local", "user.name") == "jianpengyao and Claude"
     assert _git(repo, "config", "--local", "user.email") == "me@example.com"
 
 

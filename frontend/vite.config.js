@@ -17,7 +17,7 @@ const httpsConfig = fs.existsSync(path.join(certsDir, 'selfsigned.key'))
 // tagged releases on a public CDN; pin to the current version so each
 // release immutably points at its own icons.
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'))
-const ICON_BASE = `https://cdn.jsdelivr.net/gh/jyao97/xylocopa@v${pkg.version}/frontend/public`
+const ICON_BASE = `https://cdn.jsdelivr.net/gh/jianpengyao/xylocopa@v${pkg.version}/frontend/public`
 
 // https://vite.dev/config/
 export default defineConfig({

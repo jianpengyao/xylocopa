@@ -76,8 +76,8 @@ describe("DropboxLinkModal", () => {
       authorize_url: "https://www.dropbox.com/oauth2/authorize?client_id=testkey1234&response_type=code",
       state: "abc123",
       mode: "relay",
-      redirect_uri: "https://jyao97.github.io/xylocopa/oauth/dropbox/",
-      relay_start_url: "https://jyao97.github.io/xylocopa/oauth/dropbox/#return=https%3A%2F%2Flocalhost%3A3000&authorize=https%3A%2F%2Fwww.dropbox.com%2Foauth2%2Fauthorize%3Fclient_id%3Dtestkey1234",
+      redirect_uri: "https://jianpengyao.github.io/xylocopa/oauth/dropbox/",
+      relay_start_url: "https://jianpengyao.github.io/xylocopa/oauth/dropbox/#return=https%3A%2F%2Flocalhost%3A3000&authorize=https%3A%2F%2Fwww.dropbox.com%2Foauth2%2Fauthorize%3Fclient_id%3Dtestkey1234",
     });
 
     setup({ returnTo: "/projects/test" });
@@ -97,7 +97,7 @@ describe("DropboxLinkModal", () => {
     // Should assign the relay_start_url, not authorize_url
     await waitFor(() => {
       expect(assignMock).toHaveBeenCalledWith(
-        "https://jyao97.github.io/xylocopa/oauth/dropbox/#return=https%3A%2F%2Flocalhost%3A3000&authorize=https%3A%2F%2Fwww.dropbox.com%2Foauth2%2Fauthorize%3Fclient_id%3Dtestkey1234",
+        "https://jianpengyao.github.io/xylocopa/oauth/dropbox/#return=https%3A%2F%2Flocalhost%3A3000&authorize=https%3A%2F%2Fwww.dropbox.com%2Foauth2%2Fauthorize%3Fclient_id%3Dtestkey1234",
       );
     });
   });

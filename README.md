@@ -51,7 +51,7 @@ Every agent runs in a tmux session you can attach to from a terminal, and CLI se
 You need Linux or macOS, Node.js 18+, Python 3.11+, tmux, and the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`, then run `claude` once to log in). A Claude Pro/Max subscription is enough, and Bedrock/Vertex/LiteLLM support carries over via the usual env vars. An OpenAI key is optional and only needed for voice input.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jyao97/xylocopa/master/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jianpengyao/xylocopa/master/setup.sh | bash
 ```
 
 The installer clones into `~/xylocopa-main`, prompts for your projects directory, default model, and ports, writes `.env` ([`.env.example`](.env.example) is the annotated reference), generates SSL certs, and starts the services. To install manually instead, clone the repo and run `./setup.sh` followed by `./run.sh start`. Open `https://<machine-ip>:3000` and set a password on first visit.
@@ -70,7 +70,7 @@ Agents call back into the orchestrator through a built-in MCP server that lets t
 
 ## Telemetry
 
-One anonymous event per day, containing a random install id, version, platform, and timestamp. Nothing user-generated, no IPs, no prompts, no paths. Sent by [`telemetry.py`](orchestrator/telemetry.py) to a [Cloudflare Worker](https://github.com/jyao97/xylocopa-telemetry) owned by the author, with no third-party analytics. Disable it with the toggle in **Monitor → Help improve Xylocopa** or `XYLOCOPA_TELEMETRY=0`.
+One anonymous event per day, containing a random install id, version, platform, and timestamp. Nothing user-generated, no IPs, no prompts, no paths. Sent by [`telemetry.py`](orchestrator/telemetry.py) to a [Cloudflare Worker](https://github.com/jianpengyao/xylocopa-telemetry) owned by the author, with no third-party analytics. Disable it with the toggle in **Monitor → Help improve Xylocopa** or `XYLOCOPA_TELEMETRY=0`.
 
 ## More
 
