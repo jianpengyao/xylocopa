@@ -1,7 +1,8 @@
 """Model pricing lookup and cost math.
 
 USD per 1M tokens, Anthropic published rates (subject to change).
-Last verified against platform.claude.com/pricing on 2026-05-02.
+Last verified on 2026-09-22 against the Claude Code CLI's own baked-in
+model table (v2.1.280, `pricing_tiers`), which is what actually bills.
 
 Cache create has TWO sub-rates because Anthropic charges 1h ephemeral
 cache writes at a higher rate than 5min:
@@ -10,8 +11,9 @@ cache writes at a higher rate than 5min:
 JSONL `usage.cache_creation` exposes the split:
   ephemeral_5m_input_tokens, ephemeral_1h_input_tokens
 
-Cache read price is 0.10× input regardless of which TTL was used to write —
-except Fable 5.1, which reads cache at $0.25/MTok (0.025× input).
+Cache read price is 0.10× input regardless of which TTL was used to write,
+with two exceptions that carry their own rate: Fable 5.1 reads at
+$0.25/MTok (0.025×) and Opus 5.5 at $0.20/MTok (0.05×).
 """
 from __future__ import annotations
 
@@ -38,8 +40,9 @@ PRICING: dict[str, dict[str, float]] = {
     # --- Opus 4 / 4.1 (legacy $15/$75) ---
     "claude-opus-4-1":   {"input": 15.00, "cache_create_5m": 18.75, "cache_create_1h": 30.00, "cache_read": 1.50, "output": 75.00},
     "claude-opus-4":     {"input": 15.00, "cache_create_5m": 18.75, "cache_create_1h": 30.00, "cache_read": 1.50, "output": 75.00},
-    # --- Sonnet 5 / 4.x ($3/$15) ---
-    "claude-sonnet-5":   {"input": 3.00,  "cache_create_5m": 3.75,  "cache_create_1h":  6.00, "cache_read": 0.30, "output": 15.00},
+    # --- Sonnet 5 ($2/$10 — its own tier, cache read $0.20) ---
+    "claude-sonnet-5":   {"input": 2.00,  "cache_create_5m": 2.50,  "cache_create_1h":  4.00, "cache_read": 0.20, "output": 10.00},
+    # --- Sonnet 4.x ($3/$15) ---
     "claude-sonnet-4-6": {"input": 3.00,  "cache_create_5m": 3.75,  "cache_create_1h":  6.00, "cache_read": 0.30, "output": 15.00},
     "claude-sonnet-4-5": {"input": 3.00,  "cache_create_5m": 3.75,  "cache_create_1h":  6.00, "cache_read": 0.30, "output": 15.00},
     "claude-sonnet-4":   {"input": 3.00,  "cache_create_5m": 3.75,  "cache_create_1h":  6.00, "cache_read": 0.30, "output": 15.00},

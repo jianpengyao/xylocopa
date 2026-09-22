@@ -208,11 +208,14 @@ def create_tmux_claude_session(
     # defense in depth against env name churn.
     env_setup += " && export CLAUDE_CODE_RESUME_TOKEN_THRESHOLD=999999999"
     env_setup += " && export CLAUDE_CODE_RESUME_THRESHOLD_MINUTES=999999"
-    # Enable 1M context window (--model drops [1m] suffix; alias + env var works).
-    # Opus 1M is plan-covered, but Sonnet 1M currently requires usage credits this
-    # account lacks ("API Error: Usage credits required for 1M context") — so pin
-    # Sonnet to standard 200K instead of [1m], otherwise every Sonnet agent fails
-    # to launch. Re-add the [1m] suffix here if/when Sonnet 1M becomes available.
+    # Back the bare "opus"/"sonnet" aliases that _model_for_cli emits for the
+    # models that still need one (--model drops a [1m] suffix, but the suffix
+    # survives when it arrives through these env vars).
+    # Opus 4.6 is a 200K model that opts into 1M via the suffix, so it keeps it.
+    # Sonnet 5 needs no suffix: CC 2.1.280 lists it as native-1M (window 1e6,
+    # native_1m, no supports_1m_suffix), so the bare id already gets the full
+    # window. This retires the old "Usage credits required for 1M context"
+    # workaround that pinned Sonnet to 200K.
     env_setup += ' && export ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-4-6[1m]"'
     env_setup += ' && export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5"'
     if agent_id:
