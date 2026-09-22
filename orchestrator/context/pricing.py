@@ -25,7 +25,11 @@ PRICING: dict[str, dict[str, float]] = {
     # would hand it Fable 5's $1.00 cache_read, but 5.1 reads at $0.25/MTok.
     "claude-fable-5-1":  {"input": 10.00, "cache_create_5m": 12.50, "cache_create_1h": 20.00, "cache_read": 0.25, "output": 50.00},
     "claude-fable-5":    {"input": 10.00, "cache_create_5m": 12.50, "cache_create_1h": 20.00, "cache_read": 1.00, "output": 50.00},
-    # --- Opus 4.5+ / Opus 5 ($5/$25 — current generation) ---
+    # --- Opus 5.5 ($4/$20 — cheapest Opus tier, cache read $0.20) ---
+    # Must stay an explicit entry: resolve_pricing's suffix-strip fallback
+    # would hand it Opus 5's $5/$25 rates and a 2.5x cache_read.
+    "claude-opus-5-5":   {"input": 4.00,  "cache_create_5m": 5.00,  "cache_create_1h":  8.00, "cache_read": 0.20, "output": 20.00},
+    # --- Opus 4.5+ / Opus 5 ($5/$25 — previous generation) ---
     "claude-opus-5":     {"input": 5.00,  "cache_create_5m": 6.25,  "cache_create_1h": 10.00, "cache_read": 0.50, "output": 25.00},
     "claude-opus-4-8":   {"input": 5.00,  "cache_create_5m": 6.25,  "cache_create_1h": 10.00, "cache_read": 0.50, "output": 25.00},
     "claude-opus-4-7":   {"input": 5.00,  "cache_create_5m": 6.25,  "cache_create_1h": 10.00, "cache_read": 0.50, "output": 25.00},

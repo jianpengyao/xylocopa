@@ -51,6 +51,7 @@ export const AGENT_MODES = [
 export const MODEL_OPTIONS = [
   { value: "claude-fable-5-1", label: "Fable 5.1" },
   { value: "claude-fable-5", label: "Fable 5" },
+  { value: "claude-opus-5-5", label: "Opus 5.5" },
   { value: "claude-opus-5", label: "Opus 5" },
   { value: "claude-opus-4-6", label: "Opus 4.6" },
   { value: "claude-sonnet-5", label: "Sonnet 5" },
@@ -59,8 +60,8 @@ export const MODEL_OPTIONS = [
 
 // Default model for new tasks — the latest Opus, deliberately NOT
 // MODEL_OPTIONS[0]: the Fable tier leads the picker visually but is opt-in
-// (~2x cost), so new tasks default to Opus 5 unless the user picks Fable.
-export const DEFAULT_MODEL = "claude-opus-5";
+// (~2x cost), so new tasks default to Opus 5.5 unless the user picks Fable.
+export const DEFAULT_MODEL = "claude-opus-5-5";
 
 // Models no longer offered in the picker but still valid on existing
 // agents/tasks — keeps their tags rendering with proper labels.

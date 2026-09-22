@@ -64,7 +64,7 @@ Tap the `+` button in the bottom nav to open the **New Task** sheet.
 
 The title is optional and gets derived from the description if you leave it blank. The description is the prompt the agent sees. On a fresh install leave the project blank and triage later. Four knobs sit below the text.
 
-- **Model.** Fable 5, Opus 5, Opus 4.6, Sonnet 5, or Haiku 4.5. Opus 5 is the default; pick a cheaper tier for simple tasks.
+- **Model.** Fable 5, Opus 5.5, Opus 5, Opus 4.6, Sonnet 5, or Haiku 4.5. Opus 5.5 is the default; pick a cheaper tier for simple tasks.
 - **Effort.** Low, Medium, High, XHigh, or Max. Higher means more thinking, slower and more expensive.
 - **Worktree.** Runs the agent in an isolated [git worktree](https://git-scm.com/docs/git-worktree) so it won't collide with anything else you have open.
 - **Auto.** See [Auto mode and safety](#auto-mode-and-safety).

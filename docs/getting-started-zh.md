@@ -64,7 +64,7 @@ Xylocopa 管理的一个运行中的 Claude Code 会话。每个 agent 住在名
 
 标题可以不填，会从描述自动生成。描述就是发给 agent 的 prompt。刚装好时 project 留空，之后再归类。文本框下面有四个参数。
 
-- **Model。** Fable 5、Opus 5、Opus 4.6、Sonnet 5、Haiku 4.5。默认 Opus 5，简单任务选便宜的档。
+- **Model。** Fable 5、Opus 5.5、Opus 5、Opus 4.6、Sonnet 5、Haiku 4.5。默认 Opus 5.5，简单任务选便宜的档。
 - **Effort。** Low、Medium、High、XHigh、Max。越高思考越多，也越慢越贵。
 - **Worktree。** 打开后 agent 在隔离的 [git worktree](https://git-scm.com/docs/git-worktree) 里干活，不和你或其他 agent 打架。
 - **Auto。** 见 [Auto 模式与安全](#auto-模式与安全)。

@@ -261,8 +261,8 @@ async function main() {
     }
 
     // Claude model
-    console.log(`\n  ${DIM}Available models: claude-fable-5-1, claude-fable-5, claude-opus-5, claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5-20251001${R}`);
-    const model = await ask('Default Claude model', 'claude-opus-5');
+    console.log(`\n  ${DIM}Available models: claude-fable-5-1, claude-fable-5, claude-opus-5-5, claude-opus-5, claude-opus-4-8, claude-sonnet-5, claude-haiku-4-5-20251001${R}`);
+    const model = await ask('Default Claude model', 'claude-opus-5-5');
     envContent = envContent.replace(/^CC_MODEL=.*$/m, `CC_MODEL=${model}`);
     info(`Default model: ${model}`);
 

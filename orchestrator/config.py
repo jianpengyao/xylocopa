@@ -39,7 +39,7 @@ MAX_IDLE_AGENTS = int(os.getenv("MAX_IDLE_AGENTS", "20"))
 # Default Claude model — single source of truth; also the
 # Project.default_model column default (models.py) and the project
 # schema default (schemas.py).
-DEFAULT_CLAUDE_MODEL = "claude-opus-5"
+DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
 CC_MODEL = os.getenv("CC_MODEL", DEFAULT_CLAUDE_MODEL)
 
 # Model for internal claude -p summarization jobs (agent insights, retry
@@ -68,6 +68,7 @@ ATTENTION_CHARGEN_MODEL = os.getenv("ATTENTION_CHARGEN_MODEL", "claude-opus-5")
 VALID_MODELS = {
     "claude-fable-5-1",
     "claude-fable-5",
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
