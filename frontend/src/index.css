@@ -1994,8 +1994,18 @@ body::after {
 .safe-area-pb-tight {
   padding-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - 20px));
 }
+/* iOS 26+ home-screen apps: the system draws a Liquid Glass scroll-edge
+   blur under the status bar that ramps ~40pt below env(safe-area-inset-top),
+   smearing whatever is drawn there (there is no opt-out). Standalone iOS
+   only: push the first header row below the ramp. */
+:root { --ios-status-blur-pad: 0px; }
+@media (display-mode: standalone) {
+  @supports (-webkit-touch-callout: none) {
+    :root { --ios-status-blur-pad: 40px; }
+  }
+}
 .safe-area-pt {
-  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--ios-status-blur-pad));
 }
 .safe-area-toast {
   top: max(1rem, calc(env(safe-area-inset-top, 0px) + 0.5rem));
