@@ -280,22 +280,25 @@ function AppRoutes({ themeProps }) {
   // `display:none` to `display:block` — which produced a visible flash on
   // every tab switch back into Projects/Agents/Tasks/Git. visibility keeps
   // the rendering tree intact so animations stay in-phase across switches.
-  const tabStyle = (active) => active ? null : { position: "absolute", inset: 0, visibility: "hidden", pointerEvents: "none" };
+  // data-page-hidden lets CSS pause animations inside parked tabs.
+  const tabProps = (active) => active
+    ? {}
+    : { style: { position: "absolute", inset: 0, visibility: "hidden", pointerEvents: "none" }, "data-page-hidden": "" };
 
   return (
     <div className="relative h-full">
       {/* Keep-mounted main tabs — always rendered, visibility toggled by CSS.
           Each receives `isActive` so its polling/effects pause when hidden. */}
-      <div className="h-full" style={tabStyle(keepMountedActive === "projects")}>
+      <div className="h-full" {...tabProps(keepMountedActive === "projects")}>
         <ProjectsPage {...themeProps} isActive={keepMountedActive === "projects"} />
       </div>
-      <div className="h-full" style={tabStyle(keepMountedActive === "agents")}>
+      <div className="h-full" {...tabProps(keepMountedActive === "agents")}>
         <AgentsPage {...themeProps} isActive={keepMountedActive === "agents"} />
       </div>
-      <div className="h-full" style={tabStyle(keepMountedActive === "tasks")}>
+      <div className="h-full" {...tabProps(keepMountedActive === "tasks")}>
         <TasksPage {...themeProps} isActive={keepMountedActive === "tasks"} />
       </div>
-      <div className="h-full" style={tabStyle(keepMountedActive === "git")}>
+      <div className="h-full" {...tabProps(keepMountedActive === "git")}>
         <GitPage {...themeProps} isActive={keepMountedActive === "git"} />
       </div>
 
