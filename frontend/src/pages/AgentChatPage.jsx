@@ -2960,7 +2960,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // "Failed to load" toast when display data already rendered fine.
       let agentData = null;
       try {
-        agentData = await fetchAgent(id);
+        agentData = await fetchAgent(id, { includeSubagents: false });
       } catch (err) {
         if (controller.signal.aborted) return;
         if (!cachedBrief) throw err; // cold cache → propagate to outer catch
@@ -3097,7 +3097,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // into one render — the user advances the cursor via loadNewerMessages.
   const refreshMessages = useCallback(async () => {
     try {
-      const agentData = await fetchAgent(id);
+      const agentData = await fetchAgent(id, { includeSubagents: false });
       if (!agentData || !agentData.id) return;
       setAgent(agentData);
 

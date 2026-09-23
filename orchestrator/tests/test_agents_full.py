@@ -127,6 +127,26 @@ async def test_get_agent_includes_subagents(client, db_engine):
 
 
 @pytest.mark.anyio
+async def test_get_agent_can_exclude_subagents(client, db_engine):
+    """include_subagents=false omits the child list (chat-page poll payload)."""
+    db = _make_session(db_engine)
+    _seed_project(db)
+    _seed_agent(db, "parent222222", status=AgentStatus.IDLE)
+    _seed_agent(db, "child3333333", status=AgentStatus.IDLE, parent_id="parent222222", is_subagent=True)
+    db.close()
+
+    resp = await client.get("/api/agents/parent222222?include_subagents=false")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == "parent222222"
+    assert data["subagents"] is None
+
+    # Default is unchanged.
+    resp = await client.get("/api/agents/parent222222")
+    assert [s["id"] for s in resp.json()["subagents"]] == ["child3333333"]
+
+
+@pytest.mark.anyio
 async def test_get_agent_successor_id(client, db_engine):
     """Agent with a non-subagent child (successor) should show successor_id."""
     db = _make_session(db_engine)

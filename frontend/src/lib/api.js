@@ -318,7 +318,7 @@ export const batchProcessTasks = (taskIds) =>
 // --- Agents ---
 export const fetchAgents = (params = "") =>
   request(`/api/agents${params ? `?${params}` : ""}`);
-export const fetchAgent = (id) => request(`/api/agents/${id}`);
+export const fetchAgent = (id, { includeSubagents = true } = {}) => request(`/api/agents/${id}${includeSubagents ? "" : "?include_subagents=false"}`);
 export const fetchAgentContextUsage = (id) => request(`/api/agents/${id}/context-usage`);
 export const fetchUnreadCount = () => request("/api/agents/unread");
 export const fetchUnreadList = () => request("/api/agents/unread-list");

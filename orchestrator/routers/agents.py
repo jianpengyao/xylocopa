@@ -2067,8 +2067,15 @@ async def get_agent_cc_sessions(agent_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/api/agents/{agent_id}", response_model=AgentOut)
-async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_db)):
-    """Get full agent details."""
+async def get_agent(agent_id: str, request: Request, include_subagents: bool = True,
+                    db: Session = Depends(get_db)):
+    """Get full agent details.
+
+    ``include_subagents=false`` omits the embedded child list. The chat page
+    polls this endpoint every 3 s and never reads ``subagents``; for an
+    agent with hundreds of finished workflow children the list was ~260 KB
+    per poll (measured 2026-09-22: 4.8 MB/min on a phone).
+    """
     agent = get_agent_or_404(db, agent_id)
 
     # Compute live session file size + successor link
@@ -2085,13 +2092,18 @@ async def get_agent(agent_id: str, request: Request, db: Session = Depends(get_d
                 result.session_size_bytes = os.path.getsize(jsonl_path)
             except OSError:
                 pass
-    # Attach child subagents
-    child_rows = db.query(Agent).filter(
-        Agent.parent_id == agent.id,
-        Agent.is_subagent == True,  # noqa: E712
-    ).order_by(Agent.created_at).all()
-    if child_rows:
-        result.subagents = [AgentBrief.model_validate(r) for r in child_rows]
+    # Attach child subagents (skipped for the chat-page poll). The ORM
+    # relationship already populated result.subagents via model_validate,
+    # so the opt-out must clear it explicitly.
+    if include_subagents:
+        child_rows = db.query(Agent).filter(
+            Agent.parent_id == agent.id,
+            Agent.is_subagent == True,  # noqa: E712
+        ).order_by(Agent.created_at).all()
+        if child_rows:
+            result.subagents = [AgentBrief.model_validate(r) for r in child_rows]
+    else:
+        result.subagents = None
 
     return result
 
