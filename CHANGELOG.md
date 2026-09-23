@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-23
+
+Maintenance release for Claude Code 2.1.28x and mobile performance. Claude Code started wrapping every pasted prompt in `<pasted_content>` tags, which made every web-sent message appear twice; the parser now unwraps them and a repair tool cleans up existing history. The chat page on phones was measured under iPhone emulation and its idle cost was cut substantially (network 5.6 MB/min to 118 KB/min, script time to about a third). Also: Opus 5.5 as the default model, and launched sessions no longer have their `opus` alias pinned to Opus 4.6.
+
+### Fixed
+
+- **Duplicate user bubbles with Claude Code 2.1.28x.** Since 2.1.28x the CLI writes pasted input to the session JSONL wrapped in `<pasted_content id="…">…</pasted_content id="…">`. Every orchestrator-delivered message is a paste, so web and task prompts echoed back wrapped, failed the content match, their sent row never got promoted, and a second `source=cli` bubble was created. `jsonl_parser.unwrap_pasted_content` removes the wrapper in the parser, in `strip_agent_preamble` and defensively in `ContentMatcher`. (af95aceb)
+- **History purged on compaction of large sessions.** The compact-time full scan reads only the last 50 MB of an oversized session JSONL and treated every older turn as an orphan to delete; a 151 MB session lost about 3,200 agent and system rows over three compactions. The purge is skipped when the scan was truncated. (0bae0ca2)
+- **`tools/repair_pasted_content_dupes.py`** merges the duplicate bubbles back into their web/task rows, promotes rows left in the sent state from their JSONL echo, and rebuilds the affected display files (`--apply`, `--rebuild ID[,ID]`). (088c0a63, 9c239f10)
+- **`opus` alias pinned to Opus 4.6 in launched sessions.** `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-6[1m]` was exported into every session, so `/model` defaults and `opus` subagents resolved to 4.6 regardless of the agent's model; it is now exported only when the launch itself uses `--model opus`. (0db7e7dd)
+- **Composer bar transparent on phones** after the blur removal; touch devices now take the `no-glass` path with each theme's opaque bar colours. (0db7e7dd)
+
+### Changed
+
+- **Chat page polling.** `GET /api/agents/{id}` gained `include_subagents=false`; the 3 s poll uses it, so an agent with hundreds of finished workflow children no longer re-sends a ~260 KB list every tick. Unchanged polls keep the previous state objects instead of re-rendering the page; WebSocket events no longer re-render the chat, tasks and task-detail pages through an unused `lastEvent` state; tool-activity tracking moved to refs; render-path `console.log` calls removed. (a3077f90, f894ac41)
+- **Memoized bubbles.** `ChatBubble` is `React.memo`'d with stable handler props and the markdown parse of each bubble is memoized on its content. (0addbf2f)
+- **Debug instrumentation off by default.** The console mirror to `POST /api/debug/frontend-log` and the keyboard sampler to `/api/debug/kb-log` are behind `localStorage` flags `ah:clog` and `ah:kb-log`; the keyboard tracker's 60 fps loop stops when no keyboard is open. (d094a918)
+- **Paint.** No backdrop blur on touch devices; the status-dot glow animation is paused inside parked keep-mounted tabs. (ce185831)
+- **Backend.** Responses are gzip-compressed above 1 KB; `/api/projects/folders` and `/api/v2/tasks/counts` run in the threadpool instead of blocking the event loop; `/api/files/exists-batch` runs its filesystem work in a worker thread with a 15 s result cache; `GET /api/agents` omits `context_breakdown` from list briefs; uvicorn runs with `MALLOC_ARENA_MAX=2`. (e607e8a2)
+- **Models.** Opus 5.5 added and made the default; Sonnet 5 pricing and context window corrected. (83caf4da, 37b20fd1)
+- **Config.** GitHub username references follow the rename to `jianpengyao`. (85744a5a)
+- **Tests.** The in-memory SQLite test engine uses `StaticPool` so threadpool handlers see the same database. (e607e8a2)
+
 ## [0.17.0] - 2026-09-04
 
 Dropbox backup release. Registered projects can be backed up to the user's Dropbox through the HTTP API v2 — no desktop client, no changes to project folders — with per-project folder selection, gitignore-style rules and event-driven uploads. Linking is one click for every install through a project-registered Dropbox app and a static return page. Attachments uploaded from the web UI now live inside the project. Also: `ultracode` as a task effort level and Opus 5 as the default for summary/insight jobs.
