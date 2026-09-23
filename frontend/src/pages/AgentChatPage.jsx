@@ -1197,7 +1197,7 @@ function AgentTextSegment({ text, project }) {
   );
 }
 
-function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSendNow, onStartEdit, editingMessageId, agentId, onRefresh, queuePosition, queueTotal, contentOverride, toolEntries, openMenuMsgId, setOpenMenuMsgId, bookmarkedSet, onAfterBookmark }) {
+function ChatBubbleImpl({ message, project, onCancelMessage, onUpdateMessage, onSendNow, onStartEdit, editingMessageId, agentId, onRefresh, queuePosition, queueTotal, contentOverride, toolEntries, openMenuMsgId, setOpenMenuMsgId, bookmarkedSet, onAfterBookmark }) {
   if (message.kind === "tool_activity") {
     return null;
   }
@@ -1417,6 +1417,8 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     if (isUser && !message.metadata?.attachments) return stripAttachmentTags(message.content);
     return message.content;
   }, [contentOverride, isUser, message.content, message.metadata]);
+  // Parsed once per content change, not on every render of the page.
+  const renderedContent = useMemo(() => renderMarkdown(displayContent, project), [displayContent, project]);
 
   // Scheduled bubble shows a "due in …" relative countdown (matches the
   // deferred_to display in AgentRow / InboxCard) — absolute time is in the
@@ -1465,14 +1467,14 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
             displayContent && (
               <div className="text-sm user-md break-words chat-bubble-content">
                 <SafeMarkdown fallback={displayContent}>
-                  {renderMarkdown(displayContent, project)}
+                  {renderedContent}
                 </SafeMarkdown>
               </div>
             )
           ) : (
             <div className="text-sm break-words chat-bubble-content" ref={markdownRef} onClick={handleMarkdownClick}>
               <SafeMarkdown fallback={displayContent}>
-                {renderMarkdown(displayContent, project)}
+                {renderedContent}
               </SafeMarkdown>
             </div>
           )}
@@ -1728,6 +1730,11 @@ function ChatBubble({ message, project, onCancelMessage, onUpdateMessage, onSend
     </div>
   );
 }
+
+// Memoized: the page re-renders on every poll/WS tick and there can be
+// thousands of bubbles; with stable handler props an unchanged message now
+// skips its render (and its markdown parse) entirely.
+const ChatBubble = React.memo(ChatBubbleImpl);
 
 // --- Tool log entry rendering helpers ---
 
@@ -4122,7 +4129,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // tombstones the display entry). WS pre_sent_tombstoned will re-sync
   // pre-sent state; we optimistically drop from both source states for
   // immediate visual feedback.
-  const handleCancelMessage = async (messageId) => {
+  const handleCancelMessage = useCallback(async (messageId) => {
     try {
       await deleteMessage(id, messageId);
       setPreSentMessages((prev) => prev.filter((m) => m.id !== messageId));
@@ -4131,10 +4138,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     }
-  };
+  }, [id, showToast]);
 
   // Update a scheduled/pending message — always pre-sent.
-  const handleUpdateMessage = async (messageId, data) => {
+  const handleUpdateMessage = useCallback(async (messageId, data) => {
     try {
       const updated = await updateMessage(id, messageId, data);
       setPreSentMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
@@ -4142,12 +4149,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     }
-  };
+  }, [id, showToast]);
 
   // Composer-based edit flow for queued/scheduled messages.
-  const handleStartEditMessage = (message) => {
+  const handleStartEditMessage = useCallback((message) => {
     setEditingMessage({ id: message.id, content: message.content });
-  };
+  }, []);
   const handleSaveMessageEdit = async (content) => {
     if (!editingMessage) return;
     const { id: msgId, content: original } = editingMessage;
@@ -4169,7 +4176,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   // Send a scheduled message immediately — pre-sent transition (still
   // pre-sent, just status changes). Refresh pre-sent for canonical state.
-  const handleSendNow = async (messageId) => {
+  const handleSendNow = useCallback(async (messageId) => {
     try {
       const updated = await updateMessage(id, messageId, { scheduled_at: "" });
       setPreSentMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
@@ -4177,7 +4184,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     } catch (err) {
       showToast("Failed: " + err.message, "error");
     }
-  };
+  }, [id, showToast]);
 
   // Stop agent
   const handleStop = async () => {
