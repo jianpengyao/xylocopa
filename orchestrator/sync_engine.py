@@ -1300,8 +1300,24 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
         # On compact: delete orphaned cli-sourced messages + reassign session_seq
         _compact_finalized_msg_id: str | None = None
         _compact_activity_id: str | None = None
+        # The scan above reads only the LAST MAX_AUDIT_FILE_SIZE bytes of an
+        # oversized JSONL (parse_session_turns tail-caps). Every turn before
+        # that window is then absent from jsonl_uuids and would be purged
+        # as an "orphan" although it is still in the file — observed on
+        # 2026-09-21/22 for a 151 MB session: three compactions purged
+        # 466 + 1489 + 1264 agent/system rows that the JSONL still held.
+        # Orphan detection is only meaningful when the whole file was read.
+        _scan_truncated = MAX_AUDIT_FILE_SIZE > 0 and current_size > MAX_AUDIT_FILE_SIZE
         if reason == "compact":
             _cli_orphans = [m for m in extra_in_db if m.source == "cli"]
+            if _cli_orphans and _scan_truncated:
+                logger.warning(
+                    "Agent %s: compact scan read only the last %d of %d bytes — "
+                    "skipping orphan purge of %d cli rows (cannot tell orphans "
+                    "from turns outside the scanned window)",
+                    ctx.agent_id[:8], MAX_AUDIT_FILE_SIZE, current_size, len(_cli_orphans),
+                )
+                _cli_orphans = []
             if _cli_orphans:
                 # DRIFT_INSTRUMENT: log every UUID being purged. If we ever see
                 # this fire outside a real /compact event, we have a smoking
