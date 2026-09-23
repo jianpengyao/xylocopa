@@ -10,6 +10,7 @@ Public API:
     is_wrapped_prompt            — detect system-wrapped prompts
     merge_interactive_meta       — merge JSONL + web-UI interactive metadata
     strip_agent_preamble         — remove orchestrator preamble/postamble
+    unwrap_pasted_content        — remove Claude Code's <pasted_content> paste wrapper
     format_tool_summary          — format tool_use as one-line markdown
     parse_xylocopa_marker        — legacy marker parsing (also accepts old agenthive marker)
     derive_selected_index        — derive selection from answer text
@@ -57,6 +58,25 @@ _POSTAMBLE_RE = re.compile(
     r"(?:\n\n---\n"
     r"The following are past insights.*?)?"  # optional insights block
     r"\n\nIf you make code changes, commit with message format: \[scope\] short description$",
+    re.DOTALL,
+)
+
+# Claude Code (2.1.28x, first seen in session JSONL on 2026-09-19) wraps a
+# terminal paste before recording the user turn:
+#
+#     \n\n<pasted_content id="9671">\n{text}\n</pasted_content id="9671">\n
+#
+# The id is a per-process random token and the closing tag repeats it. Every
+# message the orchestrator delivers through tmux send-keys is a paste from
+# the CLI's point of view, so web/task prompts echo back wrapped. Left
+# unwrapped they no longer content-match their SENT rows (ContentMatcher),
+# the row never gets promoted, and a second source=cli bubble is created for
+# every web message. Attributes on the closing tag are optional so the older
+# bare ``<pasted_content>`` form unwraps too.
+_PASTED_CONTENT_RE = re.compile(
+    r"<pasted_content(?P<attrs>(?:\s[^>]*)?)>\n?"
+    r"(?P<body>.*?)"
+    r"\n?</pasted_content(?P=attrs)?>",
     re.DOTALL,
 )
 
@@ -305,6 +325,20 @@ def parse_xylocopa_marker(text: str) -> dict | None:
 parse_agenthive_marker = parse_xylocopa_marker
 
 
+def unwrap_pasted_content(content: str) -> str:
+    """Strip Claude Code's ``<pasted_content id=…>…</pasted_content id=…>``
+    paste wrapper(s), returning the pasted text itself.
+
+    Applies to every block in the message (a CLI user can paste several
+    times into one prompt). Returns ``content`` unchanged when no wrapper
+    is present, so callers can cheaply detect whether anything happened.
+    """
+    if not content or "<pasted_content" not in content:
+        return content
+    unwrapped = _PASTED_CONTENT_RE.sub(lambda m: m.group("body"), content)
+    return unwrapped.strip() if unwrapped != content else content
+
+
 def is_wrapped_prompt(content: str) -> bool:
     """Check if content is a system-wrapped prompt from _build_agent_prompt
     or _build_task_prompt.
@@ -314,7 +348,7 @@ def is_wrapped_prompt(content: str) -> bool:
     - Marker: ``<!-- xylocopa-prompt`` (or legacy ``<!-- agenthive-prompt``)
     - Task prompt header: ``# Task:`` (remains after strip_agent_preamble)
     """
-    head = content[:80]
+    head = unwrap_pasted_content(content)[:80]
     return (
         PREAMBLE_PREFIX in head
         or XYLOCOPA_PROMPT_MARKER in head
@@ -324,7 +358,13 @@ def is_wrapped_prompt(content: str) -> bool:
 
 
 def strip_agent_preamble(content: str) -> str:
-    """Strip orchestrator-injected preamble/postamble from user messages."""
+    """Strip orchestrator-injected preamble/postamble from user messages.
+
+    Unwraps Claude Code's ``<pasted_content>`` paste wrapper first — since
+    CC 2.1.28x the whole orchestrator prompt arrives inside it, so the
+    preamble regex would otherwise never anchor at the start of the text.
+    """
+    content = unwrap_pasted_content(content)
     text = _PREAMBLE_RE.sub("", content)
     text = _POSTAMBLE_RE.sub("", text)
     return text.strip() if text != content else content
@@ -559,6 +599,10 @@ def parse_session_turns_from_lines(
             # Real user message = string content (not tool_result list)
             if isinstance(content, str) and content.strip():
                 stripped = content.strip()
+                # Claude Code paste wrapper (<pasted_content id=…>) — unwrap
+                # before any prefix check below so a pasted web/task prompt
+                # is classified and content-matched on its real text.
+                stripped = unwrap_pasted_content(stripped)
                 # Slash-command wrapper.  The <command-name>/<command-message>
                 # prefixes are owned exclusively by _parse_command_wrapper —
                 # they must NOT fall through to the system-injection skip-list
@@ -725,6 +769,7 @@ _parse_session_turns_from_lines = parse_session_turns_from_lines
 _is_wrapped_prompt = is_wrapped_prompt
 _merge_interactive_meta = merge_interactive_meta
 _strip_agent_preamble = strip_agent_preamble
+_unwrap_pasted_content = unwrap_pasted_content
 _format_tool_summary = format_tool_summary
 _parse_xylocopa_marker = parse_xylocopa_marker
 _parse_agenthive_marker = parse_agenthive_marker  # legacy alias

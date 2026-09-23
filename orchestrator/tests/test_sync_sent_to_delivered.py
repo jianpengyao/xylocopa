@@ -357,3 +357,73 @@ async def test_sync_rejects_unwhitelisted_source(sync_env):
         assert row.jsonl_uuid is None
     finally:
         db.close()
+
+
+@pytest.mark.anyio
+async def test_sync_matches_sent_row_through_pasted_content_wrapper(sync_env):
+    """CC 2.1.28x wraps tmux pastes in <pasted_content id=…>. The parser
+    unwraps before content reaches here, but the matcher must also see
+    through the wrapper on its own (raw callers / defence in depth) so the
+    SENT row is promoted instead of a duplicate cli row being created."""
+    from sync_engine import _promote_or_create_user_msg
+
+    agent_id = sync_env["agent_id"]
+    Session = sync_env["Session"]
+
+    sent_msg_id = _fresh()
+    db = Session()
+    try:
+        db.add(Message(
+            id=sent_msg_id,
+            agent_id=agent_id,
+            role=MessageRole.USER,
+            content="这个citation似乎不太对，@article{labs2025flux}",
+            status=MessageStatus.SENT,
+            source="web",
+            jsonl_uuid=None,
+            delivered_at=None,
+            display_seq=1,
+            dispatch_seq=1,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    wrapped = (
+        "<pasted_content id=\"9671\">\n"
+        "这个citation似乎不太对，@article{labs2025flux}\n"
+        "</pasted_content id=\"9671\">"
+    )
+    db = Session()
+    try:
+        ctx = _mk_sync_context(agent_id)
+        deferred: list[str] = []
+        result = _promote_or_create_user_msg(
+            db, ctx,
+            content=wrapped,
+            jsonl_uuid="uuid-wrapped",
+            seq=7,
+            meta=None,
+            kind=None,
+            jsonl_ts=None,
+            deferred_updates=deferred,
+        )
+        assert result is None, "wrapped echo must promote, not create a cli duplicate"
+        assert deferred == [sent_msg_id]
+        db.commit()
+    finally:
+        db.close()
+
+    db = Session()
+    try:
+        row = db.get(Message, sent_msg_id)
+        assert row.status == MessageStatus.COMPLETED
+        assert row.jsonl_uuid == "uuid-wrapped"
+        assert row.session_seq == 7
+        # No second USER row for this agent.
+        n = db.query(Message).filter(
+            Message.agent_id == agent_id, Message.role == MessageRole.USER,
+        ).count()
+        assert n == 1
+    finally:
+        db.close()

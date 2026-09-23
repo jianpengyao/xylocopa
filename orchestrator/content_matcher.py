@@ -11,6 +11,8 @@ from the web-originated DB content in several ways:
       ``## Before You Start`` (with insights), ``## Guidelines``
     - Whitespace normalization:  tmux converts tabs → spaces
     - Content truncation:  CLI may receive a truncated version
+    - Paste wrapping:  CC >= 2.1.28x wraps tmux pastes in
+      ``<pasted_content id=…>`` (unwrapped here and in the parser)
 
 Note: the ``_build_agent_prompt`` wrapper (``You are working in project: …``)
 is already stripped by ``parse_session_turns`` before content reaches here.
@@ -18,6 +20,7 @@ is already stripped by ``parse_session_turns`` before content reaches here.
 
 import re
 
+from jsonl_parser import unwrap_pasted_content
 from models import Message
 
 # ---------------------------------------------------------------------------
@@ -74,6 +77,11 @@ class ContentMatcher:
         """
         if not candidates or not content:
             return None, "none"
+
+        # 0. Claude Code paste wrapper — parse_session_turns already unwraps,
+        #    but callers feeding raw JSONL text (or DB rows imported before
+        #    the unwrap existed) must not fall through to "none".
+        content = unwrap_pasted_content(content)
 
         # 1. Exact match — fastest, most certain
         for msg in candidates:

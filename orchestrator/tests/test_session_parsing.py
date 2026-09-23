@@ -501,3 +501,102 @@ class TestGetFirstUserUuid:
     def test_get_first_user_uuid_missing_file(self):
         result = _get_first_user_uuid("/nonexistent/path/session.jsonl")
         assert result is None
+
+
+# ===========================================================================
+# 5. Claude Code <pasted_content> wrapper (CC 2.1.28x, first seen 2026-09-19)
+# ===========================================================================
+
+from jsonl_parser import (  # noqa: E402
+    _is_wrapped_prompt,
+    _unwrap_pasted_content,
+)
+
+_WRAPPED_PROMPT = (
+    "\n\n<pasted_content id=\"9671\">\n"
+    "You are working in project: gsv-tc-fusion\n"
+    "Project path: /tmp/gsv-tc-fusion\n\n"
+    "First read the project's CLAUDE.md to understand project conventions.\n"
+    "Do NOT write to memory files (.claude/memory/, MEMORY.md) or modify CLAUDE.md.\n"
+    "\n"
+    "这个citation似乎不太对，@article{labs2025flux,\n  title={Flux. 1 kontext},\n}\n"
+    "\n\nIf you make code changes, commit with message format: [scope] short description\n"
+    "</pasted_content id=\"9671\">\n"
+)
+_WRAPPED_BODY = "这个citation似乎不太对，@article{labs2025flux,\n  title={Flux. 1 kontext},\n}"
+
+
+class TestUnwrapPastedContent:
+    def test_unwrap_real_cc_shape(self):
+        """Exact shape CC 2.1.280 writes: blank lines + id on both tags."""
+        text = "\n\n<pasted_content id=\"9671\">\nhello world\n</pasted_content id=\"9671\">\n"
+        assert _unwrap_pasted_content(text) == "hello world"
+
+    def test_unwrap_keeps_inner_newlines(self):
+        text = "<pasted_content id=\"1224\">\nline one\n\nline three\n</pasted_content id=\"1224\">"
+        assert _unwrap_pasted_content(text) == "line one\n\nline three"
+
+    def test_unwrap_bare_tag_without_id(self):
+        text = "<pasted_content>\npasted\n</pasted_content>"
+        assert _unwrap_pasted_content(text) == "pasted"
+
+    def test_unwrap_multiple_blocks_with_typed_text(self):
+        """A CLI user can type around several pastes in one prompt."""
+        text = (
+            "look at these:\n\n"
+            "<pasted_content id=\"a1\">\nfirst\n</pasted_content id=\"a1\">\n\n"
+            "and\n\n"
+            "<pasted_content id=\"a1\">\nsecond\n</pasted_content id=\"a1\">"
+        )
+        assert _unwrap_pasted_content(text) == "look at these:\n\nfirst\n\nand\n\nsecond"
+
+    def test_unwrap_is_identity_without_wrapper(self):
+        for text in ("plain message", "", "mentions <pasted_content but no tag", "a < b > c"):
+            assert _unwrap_pasted_content(text) is text or _unwrap_pasted_content(text) == text
+
+    def test_unwrap_unterminated_tag_left_alone(self):
+        text = "<pasted_content id=\"9671\">\nno closing tag here"
+        assert _unwrap_pasted_content(text) == text
+
+    def test_strip_preamble_inside_wrapper(self):
+        """The orchestrator prompt arrives *inside* the wrapper — the preamble
+        regex must still anchor after unwrapping."""
+        assert _strip_agent_preamble(_WRAPPED_PROMPT.strip()) == _WRAPPED_BODY
+
+    def test_is_wrapped_prompt_sees_through_wrapper(self):
+        assert _is_wrapped_prompt(_WRAPPED_PROMPT.strip()) is True
+        assert _is_wrapped_prompt("<pasted_content id=\"1\">\nplain user text\n</pasted_content id=\"1\">") is False
+
+    def test_parse_turns_unwraps_user_turn(self, tmp_path):
+        """End-to-end: a wrapped orchestrator prompt in JSONL yields the
+        clean body, so ContentMatcher can promote the SENT row."""
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "u-1", "message": {"role": "user", "content": _WRAPPED_PROMPT}, "sessionId": "s1"},
+            {"type": "assistant", "uuid": "a-1", "message": {"content": [{"type": "text", "text": "ok"}]}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        assert turns[0][0] == "user"
+        assert turns[0][1] == _WRAPPED_BODY
+        assert turns[0][3] == "u-1"
+
+    def test_parse_turns_unwraps_plain_paste(self, tmp_path):
+        """A paste typed directly in the CLI (no orchestrator preamble)."""
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "u-2", "message": {"role": "user",
+             "content": "\n\n<pasted_content id=\"c90c\">\nIt's that I don't really care.\n</pasted_content id=\"c90c\">\n"}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        assert turns[0][1] == "It's that I don't really care."
+
+    def test_parse_turns_wrapped_list_content(self, tmp_path):
+        """Content-block form (message sent together with an image)."""
+        jsonl = tmp_path / "session.jsonl"
+        _write_jsonl(jsonl, [
+            {"type": "user", "uuid": "u-3", "message": {"role": "user", "content": [
+                {"type": "text", "text": "\n\n<pasted_content id=\"9671\">\nsee attached\n</pasted_content id=\"9671\">\n"},
+            ]}, "sessionId": "s1"},
+        ])
+        turns = _parse_session_turns(str(jsonl))
+        assert turns[0][1] == "see attached"
