@@ -1895,7 +1895,12 @@ async def list_agents(
     q = q.order_by(Agent.last_message_at.desc().nulls_last(), Agent.created_at.desc())
     if limit:
         q = q.limit(limit)
-    return _enrich_agent_briefs(q.all(), request, db)
+    briefs = _enrich_agent_briefs(q.all(), request, db)
+    # No list view renders the context breakdown (the chat page reads it from
+    # GET /api/agents/{id}); at ~1 KB per agent it was half of this payload.
+    for b in briefs:
+        b.context_breakdown = None
+    return briefs
 
 
 @router.get("/api/agents/unread")

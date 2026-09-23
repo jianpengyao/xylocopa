@@ -337,7 +337,10 @@ async def create_task_v2(body: TaskCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/api/v2/tasks/counts")
-async def task_counts(
+# Sync on purpose: the body is all synchronous DB/filesystem work with no
+# await, so as `async def` it blocked the event loop for its whole duration
+# (p50 43 ms, max 11.8 s measured). FastAPI runs plain `def` handlers in a threadpool.
+def task_counts(
     project: str | None = None,
     tz_offset: int = Query(default=0, description="Client timezone offset in minutes (JS getTimezoneOffset)"),
     db: Session = Depends(get_db),

@@ -16,6 +16,7 @@ os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 import yaml
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -692,6 +693,12 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+# Responses were never compressed: the agent list (~660 KB), project folders
+# (~97 KB) and every JSON payload went over the wire raw. Starlette gzips
+# non-streaming responses above minimum_size; there are no SSE endpoints.
+# Added before CORS so CORS stays the outermost layer.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.add_middleware(
     CORSMiddleware,

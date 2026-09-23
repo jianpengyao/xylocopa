@@ -56,6 +56,10 @@ module.exports = {
         PROJECT_CONFIGS_PATH: path.join(ROOT, 'project-configs'),
         XYLOCOPA_MANAGED: '1',
         AGENTHIVE_MANAGED: '1',  // legacy alias for external consumers
+        // uvicorn RSS grew to ~900 MB although a gc.collect()+malloc_trim(0)
+        // brought it back to ~250 MB: glibc per-thread malloc arenas holding
+        // freed memory, not a leak. Two arenas keep the process compact.
+        MALLOC_ARENA_MAX: '2',
       },
       autorestart: true,
       max_restarts: 10,

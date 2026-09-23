@@ -1295,7 +1295,10 @@ async def list_projects(db: Session = Depends(get_db)):
 
 
 @router.get("/api/projects/folders")
-async def list_all_folders(
+# Sync on purpose: the body is all synchronous DB/filesystem work with no
+# await, so as `async def` it blocked the event loop for its whole duration
+# (p50 44 ms, max 26 s measured). FastAPI runs plain `def` handlers in a threadpool.
+def list_all_folders(
     request: Request,
     tz_offset: int = Query(default=0, description="Client timezone offset in minutes"),
     db: Session = Depends(get_db),

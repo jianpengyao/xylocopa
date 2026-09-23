@@ -16,6 +16,7 @@ os.environ["DROPBOX_SYNC_DIR"] = tempfile.mkdtemp(prefix="xylocopa-dropbox-test-
 
 import pytest
 from sqlalchemy import create_engine, event
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
 from models import Agent, AgentMode, AgentStatus, Base, Message, MessageRole, MessageStatus, Project, Task, TaskStatus
@@ -60,9 +61,14 @@ def _cleanup_test_tmux_sessions():
 @pytest.fixture()
 def db_engine():
     """Create an in-memory SQLite engine with all tables."""
+    # StaticPool: one shared connection for every thread. Without it each
+    # thread gets its own private in-memory database, so a handler that runs
+    # in FastAPI's threadpool (plain `def` routes, asyncio.to_thread) sees
+    # "no such table". Production uses a file DB and is unaffected.
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
         echo=False,
     )
 
