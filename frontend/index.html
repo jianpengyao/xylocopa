@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#06b6d4" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <!-- black-translucent: the web view extends under the status bar and
-         env(safe-area-inset-top) reports its height. "default" was tried on
-         iOS 27 (2026-09-23) and made it worse: the view still sat under the
-         bar but the inset became 0, so the header slid beneath the clock.
-         The iOS 26+ scroll-edge blur under the bar is handled in CSS with
-         --ios-status-blur-pad (index.css). -->
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- "default" (opaque) on purpose: since iOS 26 a black-translucent status bar
+         gets the Liquid Glass scroll-edge blur, a ~40pt gradient that smears the
+         header row drawn under it; there is no opt-out, so the web view must not
+         extend under the status bar. The bar takes theme-color (kept in sync in
+         the script below). iOS reads this tag when the icon is added to the Home
+         Screen — existing installs must be removed and re-added. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Xylocopa" />
     <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" href="https://cdn.jsdelivr.net/gh/jianpengyao/xylocopa@v__APP_VERSION__/frontend/public/icon-192.png" />
