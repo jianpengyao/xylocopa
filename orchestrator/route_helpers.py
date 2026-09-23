@@ -216,8 +216,15 @@ def create_tmux_claude_session(
     # native_1m, no supports_1m_suffix), so the bare id already gets the full
     # window. This retires the old "Usage credits required for 1M context"
     # workaround that pinned Sonnet to 200K.
-    env_setup += ' && export ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-4-6[1m]"'
-    env_setup += ' && export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5"'
+    # Only when the launch actually uses the alias: exporting these
+    # unconditionally pinned every session's "opus" alias (and CC's
+    # /model default) to Opus 4.6, so newer Opus releases were never picked
+    # up automatically. Without the export CC resolves "opus" to its
+    # current default Opus.
+    if "--model opus" in claude_cmd:
+        env_setup += ' && export ANTHROPIC_DEFAULT_OPUS_MODEL="claude-opus-4-6[1m]"'
+    if "--model sonnet" in claude_cmd:
+        env_setup += ' && export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5"'
     if agent_id:
         env_setup += f" && export XY_AGENT_ID={agent_id} && export AHIVE_AGENT_ID={agent_id}"
     _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],

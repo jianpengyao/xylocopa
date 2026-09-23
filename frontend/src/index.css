@@ -1897,17 +1897,6 @@ svg text { font-family: inherit; }
     backdrop-filter: blur(16px) saturate(180%);
     box-shadow: 0 4px 24px rgba(0,0,0,0.1), inset 0 0.5px 0 var(--color-glass-edge);
   }
-  /* Touch devices: the composer bar sits over the scrolling message list,
-     so the GPU re-blurs that whole area every frame while scrolling — on an
-     iPhone that is the single most expensive thing on the page. Keep the
-     ≥.65-alpha frost (designed above to degrade to a washed-out surface
-     without blur), drop the blur. */
-  @media (hover: none) and (pointer: coarse) {
-    .glass-bar-nav {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
-  }
 
   /* Skeleton loading */
   .bg-skel { background-color: var(--color-skel); }

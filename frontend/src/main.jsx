@@ -34,7 +34,12 @@ prefetchHeavyChunks();
     const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
     const isLinux = /Linux/i.test(ua) && !/Android/i.test(ua);
     const isEInk = /Onyx|BOOX|Kindle|Silk|reMarkable|PocketBook|Likebook|InkPad|MEEbook|Bigme|Hisense.*ink|Meebook|iReader/i.test(ua);
-    if (isEInk) {
+    // Touch devices too: the composer bar sits over the scrolling message
+    // list and a 16px backdrop blur re-blurs that area every frame on a
+    // phone GPU. no-glass swaps in each theme's opaque bar colours (the
+    // translucent tokens alone read as see-through once the blur is gone).
+    const isTouch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+    if (isEInk || isTouch) {
       document.documentElement.classList.add("no-glass");
     }
 
