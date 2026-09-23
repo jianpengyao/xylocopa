@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useWebSocketContext } from "../contexts/WebSocketContext";
 export * from "../lib/notifications";
 
@@ -22,21 +22,19 @@ export function useWsEvent(handler, deps = []) {
 
 /**
  * Shared WebSocket hook — delegates to the single WebSocketProvider connection.
- * Provides `lastEvent` for simple consumers that only need the latest event.
+ *
+ * Deliberately exposes no `lastEvent`: keeping the latest event in state made
+ * every caller (chat page, tasks page, task detail) re-render on every WS
+ * event — several times a second during tool activity — and nothing read it.
+ * Use useWsEvent() for event delivery.
  */
 export default function useWebSocket() {
-  const { subscribe, connected, sendWsMessage: ctxSend } = useWebSocketContext();
-
-  // Derive lastEvent from the subscribe stream for backward compatibility.
-  const [lastEvent, setLastEvent] = useState(null);
-  useEffect(() => {
-    return subscribe((event) => setLastEvent(event));
-  }, [subscribe]);
+  const { connected, sendWsMessage: ctxSend } = useWebSocketContext();
 
   // Wrap sendWsMessage to handle the "viewing" convention
   const sendWsMessage = useCallback((data) => {
     ctxSend(data);
   }, [ctxSend]);
 
-  return { lastEvent, connected, sendWsMessage };
+  return { connected, sendWsMessage };
 }

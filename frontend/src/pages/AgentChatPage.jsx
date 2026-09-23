@@ -1163,6 +1163,24 @@ function splitMessageSegments(content) {
 }
 
 /** Lightweight agent text bubble for non-final segments (no timestamp / actions). */
+// Record equality for the 3 s agent poll: an unchanged payload keeps the
+// previous object, so `agent` consumers (and the whole page) don't re-render.
+function sameAgentRecord(a, b) {
+  if (!a || !b) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of kb) {
+    const x = a[k];
+    const y = b[k];
+    if (x === y) continue;
+    if (x && y && typeof x === "object" && typeof y === "object"
+        && JSON.stringify(x) === JSON.stringify(y)) continue;
+    return false;
+  }
+  return true;
+}
+
 function AgentTextSegment({ text, project }) {
   return (
     <div className="flex justify-start my-2">
@@ -2743,8 +2761,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   const [muted, setMuted] = useState(() => isAgentMuted(id));
   const [deferredTo, setDeferredTo] = useState(null);
   const [showDeferPicker, setShowDeferPicker] = useState(false);
-  const [activeTool, setActiveTool] = useState(null);
-  const [toolStartTime, setToolStartTime] = useState(null);
+  // Refs, not state: nothing renders these — they are only consulted inside
+  // the WS handler — and as state every tool_activity event (several per
+  // second) re-rendered the whole page.
+  const activeToolRef = useRef(null);
+  const toolStartTimeRef = useRef(null);
   // Permission cards are now persisted in DB as interactive messages (no WS-only state needed)
   const generationIdRef = useRef(null); // tracks current backend generation_id
   // Debug: ring buffer of recent WS events for frontend-state reporter
@@ -2848,6 +2869,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
     let newIds = null;
     setSentMessages((prev) => {
+      // Incremental poll with nothing appended: keep the same array so the
+      // whole message list is not reconciled every 3 s for no change.
+      if (!initial && !(data.messages || []).length) return prev;
       const byId = new Map(initial ? [] : prev.map((m) => [m.id, m]));
       const prevById = (initial && prev.length)
         ? new Map(prev.map((m) => [m.id, m]))
@@ -2875,7 +2899,13 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
 
   // Apply /display/pre-sent snapshot to preSentMessages — full replace.
   const applyPreSentData = useCallback((snapshot) => {
-    setPreSentMessages(snapshot.entries || []);
+    const entries = snapshot.entries || [];
+    setPreSentMessages((prev) => (
+      prev.length === entries.length
+        && prev.every((e, i) => e === entries[i] || JSON.stringify(e) === JSON.stringify(entries[i]))
+        ? prev
+        : entries
+    ));
   }, []);
 
   // Initial load: fetch agent + sent (tail) + pre-sent (snapshot) in parallel.
@@ -2949,8 +2979,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         const lastToolMsg = [...allMsgs].reverse().find((m) => m.kind === "tool_activity");
         if (lastToolMsg && lastToolMsg.status !== "COMPLETED") {
           const meta = lastToolMsg.metadata || {};
-          setActiveTool({ name: meta.tool_name || "", summary: lastToolMsg.content || "" });
-          setToolStartTime(new Date(lastToolMsg.created_at).getTime());
+          activeToolRef.current = ({ name: meta.tool_name || "", summary: lastToolMsg.content || "" });
+          toolStartTimeRef.current = (new Date(lastToolMsg.created_at).getTime());
         }
       }
 
@@ -3099,7 +3129,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     try {
       const agentData = await fetchAgent(id, { includeSubagents: false });
       if (!agentData || !agentData.id) return;
-      setAgent(agentData);
+      setAgent((prev) => (sameAgentRecord(prev, agentData) ? prev : agentData));
 
       const isInitial = nextOffsetRef.current === 0;
       const skipSent = hasLaterRef.current;
@@ -3847,8 +3877,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       pushWsEvent('agent_stream_end', event.data);
       const gid = event.data.generation_id;
       if (gid != null && generationIdRef.current != null && gid < generationIdRef.current) return;
-      setActiveTool(null);
-      setToolStartTime(null);
+      activeToolRef.current = (null);
+      toolStartTimeRef.current = (null);
       return;
     }
 
@@ -3857,11 +3887,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       pushWsEvent('tool_activity', { tool: event.data.tool_name, phase: event.data.phase });
       const { tool_name, phase, summary } = event.data;
       if (phase === "start") {
-        setActiveTool({ name: tool_name, summary: summary || "" });
-        setToolStartTime(Date.now());
+        activeToolRef.current = ({ name: tool_name, summary: summary || "" });
+        toolStartTimeRef.current = (Date.now());
       } else if (phase === "end") {
-        setActiveTool(null);
-        setToolStartTime(null);
+        activeToolRef.current = (null);
+        toolStartTimeRef.current = (null);
       }
       return;
     }
@@ -3874,15 +3904,14 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     }
 
     if (event.type === "new_message") {
-      console.log('[ws] new_message', event.data);
       pushWsEvent('new_message', event.data);
-      const hasActiveCompact = activeTool?.name === "Compact";
+      const hasActiveCompact = activeToolRef.current?.name === "Compact";
       if (hasActiveCompact) {
         refreshMessagesRef.current({ syncHint: true });
         return;
       }
-      setActiveTool(null);
-      setToolStartTime(null);
+      activeToolRef.current = (null);
+      toolStartTimeRef.current = (null);
       refreshMessagesRef.current({ syncHint: event.data?.message_id === "sync" });
       return;
     }
@@ -3943,8 +3972,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setAgent((prev) => prev ? { ...prev, ...patch } : prev);
       }
       if (status !== "EXECUTING" && status !== "IDLE") {
-        setActiveTool(null);
-        setToolStartTime(null);
+        activeToolRef.current = (null);
+        toolStartTimeRef.current = (null);
         generationIdRef.current = null;
       }
       refreshMessagesRef.current();
@@ -4040,8 +4069,8 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // Send message — backend decides tmux-immediate (QUEUED) vs PENDING
   const handleSend = async (content) => {
     try {
-      setActiveTool(null);
-      setToolStartTime(null);
+      activeToolRef.current = (null);
+      toolStartTimeRef.current = (null);
       await sendMessage(id, content);
       refreshMessages();
     } catch (err) {
@@ -4703,7 +4732,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   }
                   return m;
                 });
-              console.log('[messages] rendering', visible.length, 'messages after filter');
               // Build tool groups: consecutive tool_use + tool_activity messages get merged
               const toolGroups = new Map(); // first msg id -> [entries]
               let groupStart = null;
@@ -4733,7 +4761,6 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   groupStart = null;
                 }
               }
-              if (toolGroups.size > 0) console.log('[render] tool groups:', toolGroups.size, 'groups,', [...toolGroups.values()].map(g => g.length + ' entries'));
               // Map each text message to preceding tool entries for media extraction
               const toolEntriesForText = new Map();
               {
@@ -4839,13 +4866,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
                   return null; // part of group or start-only leader with no entries
                 }
                 if (msg.role === "AGENT" && !(msg.content || "").trimStart().startsWith("<task-notification>")) {
-                  console.log('[render] msg', msg.id, 'role=', msg.role, 'kind=', msg.kind);
                   // Case 2: text kind — render as simple ChatBubble
                   if (msg.kind === "text") {
                     return <div key={msg.id} data-msg-id={msg.id} data-msg-type="agent_text"><ChatBubble message={msg} project={agent.project} onCancelMessage={handleCancelMessage} onUpdateMessage={handleUpdateMessage} onSendNow={handleSendNow} agentId={id} onRefresh={refreshMessages} toolEntries={toolEntriesForText.get(msg.id)} openMenuMsgId={openMenuMsgId} setOpenMenuMsgId={setOpenMenuMsgId} bookmarkedSet={bookmarkedSet} onAfterBookmark={handleAfterBookmark} /></div>;
                   }
                   // Case 3: null/undefined kind (legacy) — existing splitMessageSegments logic
-                  console.log('[render] legacy split for msg', msg.id);
                   const segments = splitMessageSegments(msg.content || "");
                   if (segments.length > 1 || segments[0]?.type === "tools") {
                     const lastTextIdx = segments.findLastIndex((s) => s.type === "text");
