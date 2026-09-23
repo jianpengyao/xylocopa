@@ -3473,6 +3473,11 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     };
 
     // --- KB debug logging: batch samples and flush to backend ---
+    // Off by default (localStorage "ah:kb-log" = "1" to enable): it POSTed
+    // one sample per animation frame while the composer had focus, i.e.
+    // continuously on a Mac (logs/kb-debug.log reached 13 MB).
+    const kbDebug = (() => { try { return localStorage.getItem("ah:kb-log") === "1"; } catch { return false; } })();
+    let kbIsOpen = false;
     const kbSamples = [];
     let kbFlushTimer = null;
     const kbFlush = () => {
@@ -3510,9 +3515,10 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       // the visual viewport (common on 2nd+ keyboard open).
       const kbOffset = Math.max(0, Math.round(containerH - vv.height - vv.offsetTop));
 
-      kbLog(containerH, kbOffset, rawDelta > 100);
+      if (kbDebug) kbLog(containerH, kbOffset, rawDelta > 100);
 
       const open = rawDelta > 100;
+      kbIsOpen = open;
 
       if (open) {
         // Only update CSS var when change > 3px to suppress sub-pixel jitter
@@ -3576,13 +3582,27 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
       }
     };
 
+    // The rAF loop tracks the keyboard's open/close animation. It used to
+    // run at 60 fps for as long as an input had focus — on a desktop that
+    // is forever (no keyboard ever opens) — doing a layout read per frame.
+    // Now it stops once the keyboard is closed and the post-focus grace
+    // window has passed; visualViewport resize events restart it.
+    let pollStartedAt = 0;
     const poll = () => {
       update();
+      if (!kbIsOpen && performance.now() - pollStartedAt > 1500) { rafId = null; return; }
       rafId = requestAnimationFrame(poll);
     };
     const startPoll = () => {
       if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+      pollStartedAt = performance.now();
       if (!rafId) rafId = requestAnimationFrame(poll);
+    };
+    const onVvResize = () => {
+      update();
+      const ae = document.activeElement;
+      const editing = !!ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable);
+      if (editing && kbIsOpen && !rafId) startPoll();
     };
     const stopPoll = () => {
       // Delay stop — keyboard switch may briefly lose focus
@@ -3592,12 +3612,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         update();
       }, 400);
     };
-    vv.addEventListener("resize", update);
+    vv.addEventListener("resize", onVvResize);
     vv.addEventListener("scroll", update);
     document.addEventListener("focusin", startPoll);
     document.addEventListener("focusout", stopPoll);
     return () => {
-      vv.removeEventListener("resize", update);
+      vv.removeEventListener("resize", onVvResize);
       vv.removeEventListener("scroll", update);
       document.removeEventListener("focusin", startPoll);
       document.removeEventListener("focusout", stopPoll);

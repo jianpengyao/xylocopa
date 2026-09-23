@@ -103,6 +103,10 @@ const _API_SLOW_MS = 300;
 // Mirror selected console.log lines to the backend so they land in
 // logs/frontend-debug.log. Useful for diagnosing render/timing issues
 // without copy-pasting out of the browser console.
+// Off by default: with the mirror on, every open client POSTed a batch every
+// 500 ms (37+ requests/min, 16% of all API calls, measured 2026-09-22).
+// Toggle on:  localStorage.setItem("ah:clog", "1"); location.reload();
+const _clogMirror = (() => { try { return localStorage.getItem("ah:clog") === "1"; } catch { return false; } })();
 let _clogBuffer = [];
 let _clogFlushTimer = null;
 function _flushClog() {
@@ -124,6 +128,7 @@ function _flushClog() {
 export function clog(...args) {
   // eslint-disable-next-line no-console
   console.log(...args);
+  if (!_clogMirror) return;
   const line = args.map((a) => typeof a === "string" ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })()).join(" ");
   _clogBuffer.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
   if (_clogFlushTimer) return;

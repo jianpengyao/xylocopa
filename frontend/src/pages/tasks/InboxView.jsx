@@ -1,10 +1,10 @@
-import { useState, useCallback, useMemo, useRef, useLayoutEffect } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import InboxCard from "../../components/cards/InboxCard";
-import { reorderTasks, clog } from "../../lib/api";
+import { reorderTasks } from "../../lib/api";
 import useDraft from "../../hooks/useDraft";
 
 /** Disable layout animation on drop to prevent snap-back */
@@ -37,12 +37,6 @@ export default function InboxView({ tasks, loading, selecting, selected, onToggl
   const [optimisticIds, setOptimisticIds] = useState(null);
   const prevTasksRef = useRef(tasks);
   const [showDeferred, setShowDeferred] = useDraft("ui:inbox:showDeferred", false);
-  const renderStartRef = useRef(performance.now());
-  renderStartRef.current = performance.now();
-  useLayoutEffect(() => {
-    clog(`[inbox] render+layout ${(performance.now() - renderStartRef.current).toFixed(1)}ms n=${tasks.length}`);
-  });
-
   // Clear optimistic state when tasks prop changes (server data arrived)
   if (tasks !== prevTasksRef.current) {
     prevTasksRef.current = tasks;
