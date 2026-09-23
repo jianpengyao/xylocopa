@@ -29,13 +29,19 @@ full (no byte cap) and each user turn that has no DB row is matched
 against those rows with ContentMatcher — exactly what the live sync path
 would have done — and the row is promoted with the turn's uuid/seq/time.
 
-Afterwards the display file of every touched agent that is not live
-(STOPPED / ERROR) is rebuilt here. Live agents are rebuilt by the server on
-its next start (display_writer.startup_rebuild_all) — the script lists them.
+Afterwards the display file of every touched agent is rebuilt from the DB
+(display_writer.rebuild_agent). The server never rebuilds display files on
+startup, so this has to happen here — also for live agents. The rebuild
+keeps pre-sent (queued) entries and takes the file lock; a message flushed
+by the running server in the same instant can at worst appear as a
+duplicate line, which the frontend de-duplicates by id.
 
 Usage:
-    .venv/bin/python tools/repair_pasted_content_dupes.py          # dry run
-    .venv/bin/python tools/repair_pasted_content_dupes.py --apply  # write
+    .venv/bin/python tools/repair_pasted_content_dupes.py                    # dry run
+    .venv/bin/python tools/repair_pasted_content_dupes.py --apply            # write
+    .venv/bin/python tools/repair_pasted_content_dupes.py --apply --rebuild ID[,ID]
+        # additionally rebuild these agents' display files (e.g. agents
+        # repaired by an earlier run while the old server was still up)
 
 Idempotent: a second run finds nothing to do.
 """
@@ -59,7 +65,6 @@ from jsonl_parser import (  # noqa: E402
 )
 from models import (  # noqa: E402
     Agent,
-    AgentStatus,
     Message,
     MessageRole,
     MessageStatus,
@@ -67,6 +72,9 @@ from models import (  # noqa: E402
 )
 
 APPLY = "--apply" in sys.argv[1:]
+EXTRA_REBUILD: list[str] = []
+if "--rebuild" in sys.argv[1:]:
+    EXTRA_REBUILD = sys.argv[sys.argv.index("--rebuild") + 1].split(",")
 CC_CHANGE_AT = datetime(2026, 9, 19)  # first wrapped turn seen (UTC)
 
 
@@ -233,26 +241,23 @@ def main() -> int:
         touched |= touched2
         print(f"\npass 1: {p1} promoted+deduplicated, {rw} rewritten; "
               f"pass 2: {p2} promoted from JSONL; {len(touched)} agents touched")
-        if not touched:
-            return 0
-        live, stopped = [], []
-        for aid in sorted(touched):
-            agent = db.get(Agent, aid)
-            status = agent.status if agent else None
-            (stopped if status in (None, AgentStatus.STOPPED, AgentStatus.ERROR) else live).append(aid)
+        for aid in EXTRA_REBUILD:
+            if db.get(Agent, aid) is None:
+                print(f"  --rebuild {aid}: no such agent — skipped")
+            else:
+                touched.add(aid)
     finally:
         db.close()
 
+    if not touched:
+        return 0
     if APPLY:
-        for aid in stopped:
+        for aid in sorted(touched):
             rebuild_agent(aid)
-            print(f"  rebuilt display file for stopped agent {aid[:8]}")
+            print(f"  rebuilt display file for agent {aid[:8]}")
     else:
-        print(f"  would rebuild display files for {len(stopped)} stopped agents")
-    if live:
-        print("  LIVE agents rebuilt by the server on restart "
-              "(display_writer.startup_rebuild_all): "
-              + ", ".join(a[:8] for a in live))
+        print(f"  would rebuild display files for {len(touched)} agents: "
+              + ", ".join(a[:8] for a in sorted(touched)))
     return 0
 
 
