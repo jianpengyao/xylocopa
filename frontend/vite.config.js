@@ -91,8 +91,13 @@ export default defineConfig({
         // surfaces as the browser's own (recoverable) error page instead of
         // a silent SW-served stale shell or a SW error page.
         globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
-        // Import existing push notification handler into generated SW
-        importScripts: ['/push-handler.js'],
+        // Imported into the generated SW, in this order, before Workbox
+        // registers its own fetch listener:
+        //  - sw-navigation.js: top-level navigations — pass through to the
+        //    network, and on any failure answer with an inline
+        //    auto-retrying "Reconnecting…" page (never rejects respondWith)
+        //  - push-handler.js: Web Push notifications
+        importScripts: ['/sw-navigation.js', '/push-handler.js'],
         // Belt-and-suspenders: explicitly tell Workbox NOT to register a
         // default NavigationRoute for SPA fallback. Without this,
         // vite-plugin-pwa would auto-register one that serves precached

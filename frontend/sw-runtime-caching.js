@@ -1,15 +1,16 @@
 // Workbox runtimeCaching routes for the generated service worker
 // (consumed by vite.config.js; unit-tested in src/lib/swRuntimeCaching.test.js).
 //
-// INVARIANT — the service worker must never call respondWith() for a
-// navigation request or an /api/ request.
+// INVARIANT — no Workbox route may match a navigation request or an /api/
+// request.
 //
 // Workbox only calls event.respondWith() when a registered route matches;
 // an unmatched request is handled by the browser's own network stack
-// "as if there were no service worker present". That is the behaviour we
-// want for page loads and API calls: if the network is down, the browser
-// shows its native error page (and, for TLS problems, its certificate
-// prompt), both of which recover on the next launch.
+// "as if there were no service worker present". /api/ requests stay
+// native. Top-level navigations are handled by public/sw-navigation.js
+// (imported ahead of Workbox), whose handler passes the network response
+// through and, on any failure, answers with an inline auto-retrying
+// "Reconnecting…" page — it can never reject respondWith.
 //
 // The previous config routed navigations, /api/* and a catch-all through
 // NetworkOnly. NetworkOnly is still a handler: when fetch() throws inside

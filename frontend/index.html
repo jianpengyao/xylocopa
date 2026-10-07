@@ -150,7 +150,13 @@
         }, 20000);
         window.addEventListener("load", function(){
           clearTimeout(_bootTimer);
-          try { sessionStorage.removeItem(KEY); } catch(_){}
+          try {
+            sessionStorage.removeItem(KEY);
+            // The app loaded: clear the offline page's bounce tracking
+            // (see public/sw-navigation.js).
+            sessionStorage.removeItem("xy-offline-probe-ok");
+            sessionStorage.removeItem("xy-offline-bounces");
+          } catch(_){}
         });
       })();
     </script>
