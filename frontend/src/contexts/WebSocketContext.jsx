@@ -2,8 +2,18 @@ import { createContext, useContext, useEffect, useRef, useCallback, useState } f
 import { getAuthToken } from "../lib/api";
 import { calibrate } from "../lib/serverTime";
 import { pickPrimaryAgent } from "../lib/notifications";
+import {
+  nextBackoff,
+  onNetworkResume,
+  WS_PING_INTERVAL_MS as PING_INTERVAL_MS,
+  WS_PONG_TIMEOUT_MS as PONG_TIMEOUT_MS,
+  WS_HANDSHAKE_TIMEOUT_MS as HANDSHAKE_TIMEOUT_MS,
+  WS_INITIAL_RECONNECT_MS as INITIAL_RECONNECT_MS,
+  WS_MAX_RECONNECT_MS as MAX_RECONNECT_MS,
+} from "../lib/reconnect";
 
 const WebSocketContext = createContext(null);
+
 
 /**
  * Single shared WebSocket connection for the entire browser tab.
@@ -12,12 +22,19 @@ const WebSocketContext = createContext(null);
  * Events are delivered via a subscriber/callback pattern so that rapid
  * successive WebSocket messages are never lost to React 18 batching
  * (which can collapse multiple setState calls into one render).
+ *
+ * Reconnect policy: never gives up. Backoff 1s × 1.5ⁿ capped at 30s on
+ * close; reset and retried immediately when the page is foregrounded or
+ * the browser reports the network is back (see lib/reconnect.js).
  */
 export function WebSocketProvider({ children }) {
   const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef(null);
-  const reconnectDelay = useRef(1000);
+  const reconnectDelay = useRef(INITIAL_RECONNECT_MS);
+  const pongTimer = useRef(null);
+  const lastMsgAt = useRef(0);
+  const connectRef = useRef(null);
   // Merged viewing state: union of all agent IDs currently being viewed
   // by any component (AgentChatPage panes). Backend receives the full set.
   const viewingAgentsRef = useRef(new Set());
@@ -66,8 +83,50 @@ export function WebSocketProvider({ children }) {
     });
   }, [_send]);
 
+  // Exactly one pending reconnect at a time.
+  const scheduleReconnect = useCallback((ms) => {
+    clearTimeout(reconnectTimer.current);
+    reconnectTimer.current = setTimeout(() => {
+      reconnectTimer.current = null;
+      connectRef.current?.();
+    }, ms);
+  }, []);
+
+  // Abandon `ws` (half-open, stuck handshake, errored) and reconnect after
+  // `delay`. No-op if `ws` has already been superseded by a newer socket.
+  const dropSocket = useCallback((ws, delay = 0) => {
+    if (wsRef.current !== ws) return;
+    wsRef.current = null;
+    clearTimeout(pongTimer.current);
+    pongTimer.current = null;
+    setConnected(false);
+    try { ws.close(); } catch { /* already closing */ }
+    scheduleReconnect(delay);
+  }, [scheduleReconnect]);
+
+  // Send a ping and require some frame back within PONG_TIMEOUT_MS.
+  const probeLiveness = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (pongTimer.current) return; // a probe is already in flight
+    const sentAt = Date.now();
+    try {
+      ws.send("ping");
+    } catch {
+      dropSocket(ws);
+      return;
+    }
+    pongTimer.current = setTimeout(() => {
+      pongTimer.current = null;
+      if (wsRef.current === ws && lastMsgAt.current < sentAt) dropSocket(ws);
+    }, PONG_TIMEOUT_MS);
+  }, [dropSocket]);
+
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const cur = wsRef.current;
+    if (cur && (cur.readyState === WebSocket.OPEN || cur.readyState === WebSocket.CONNECTING)) return;
+    clearTimeout(reconnectTimer.current);
+    reconnectTimer.current = null;
 
     const token = getAuthToken();
 
@@ -76,70 +135,90 @@ export function WebSocketProvider({ children }) {
       ? `${proto}//${window.location.host}/ws/status?token=${encodeURIComponent(token)}`
       : `${proto}//${window.location.host}/ws/status`;
 
+    let ws;
     try {
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnected(true);
-        reconnectDelay.current = 1000;
-        _syncViewing();
-        for (const fn of openSubscribersRef.current) {
-          try {
-            fn();
-          } catch (err) {
-            console.error("WebSocket onOpen subscriber error:", err);
-          }
-        }
-      };
-
-      ws.onmessage = (e) => {
-        let event;
-        try {
-          event = JSON.parse(e.data);
-        } catch {
-          return; // untrusted input may not be valid JSON
-        }
-        if (event.type === "pong" || event.type === "ping") return;
-        // Calibrate client-server clock offset from every event timestamp
-        if (event.timestamp) calibrate(event.timestamp);
-        // Deliver to all subscribers synchronously — each callback runs
-        // for every event, bypassing React batching entirely.
-        for (const fn of subscribersRef.current) {
-          try {
-            fn(event);
-          } catch (err) {
-            console.error("WebSocket subscriber error:", err);
-          }
-        }
-      };
-
-      ws.onclose = () => {
-        setConnected(false);
-        wsRef.current = null;
-        reconnectTimer.current = setTimeout(() => {
-          reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, 30000);
-          connect();
-        }, reconnectDelay.current);
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
+      ws = new WebSocket(url);
     } catch (err) {
       console.warn("WebSocketProvider: connection failed, will retry:", err);
-      reconnectTimer.current = setTimeout(connect, reconnectDelay.current);
+      scheduleReconnect(reconnectDelay.current);
+      reconnectDelay.current = nextBackoff(reconnectDelay.current, { max: MAX_RECONNECT_MS });
+      return;
     }
-  }, [_syncViewing]);
+    wsRef.current = ws;
+
+    const handshakeTimer = setTimeout(() => {
+      if (ws.readyState !== WebSocket.CONNECTING) return;
+      const delay = reconnectDelay.current;
+      reconnectDelay.current = nextBackoff(delay, { max: MAX_RECONNECT_MS });
+      dropSocket(ws, delay);
+    }, HANDSHAKE_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      clearTimeout(handshakeTimer);
+      if (wsRef.current !== ws) return;
+      lastMsgAt.current = Date.now();
+      setConnected(true);
+      reconnectDelay.current = INITIAL_RECONNECT_MS;
+      _syncViewing();
+      for (const fn of openSubscribersRef.current) {
+        try {
+          fn();
+        } catch (err) {
+          console.error("WebSocket onOpen subscriber error:", err);
+        }
+      }
+    };
+
+    ws.onmessage = (e) => {
+      lastMsgAt.current = Date.now();
+      let event;
+      try {
+        event = JSON.parse(e.data);
+      } catch {
+        return; // untrusted input may not be valid JSON
+      }
+      if (event.type === "pong" || event.type === "ping") return;
+      // Calibrate client-server clock offset from every event timestamp
+      if (event.timestamp) calibrate(event.timestamp);
+      // Deliver to all subscribers synchronously — each callback runs
+      // for every event, bypassing React batching entirely.
+      for (const fn of subscribersRef.current) {
+        try {
+          fn(event);
+        } catch (err) {
+          console.error("WebSocket subscriber error:", err);
+        }
+      }
+    };
+
+    ws.onclose = () => {
+      clearTimeout(handshakeTimer);
+      // A socket we already dropped (or replaced) must not schedule a
+      // second reconnect on top of the one its replacement owns.
+      if (wsRef.current !== ws) return;
+      wsRef.current = null;
+      clearTimeout(pongTimer.current);
+      pongTimer.current = null;
+      setConnected(false);
+      scheduleReconnect(reconnectDelay.current);
+      reconnectDelay.current = nextBackoff(reconnectDelay.current, { max: MAX_RECONNECT_MS });
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch { /* ignore */ }
+    };
+  }, [_syncViewing, scheduleReconnect, dropSocket]);
+
+  // Timers call connect through a ref so scheduleReconnect/dropSocket
+  // (declared above connect) never capture a stale closure.
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     connect();
 
-    const pingInterval = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send("ping");
-      }
-    }, 30000);
+    const pingInterval = setInterval(probeLiveness, PING_INTERVAL_MS);
 
     // Periodic viewing resync so the backend picks up:
     //  (a) switches between split-screen panes via mouse/keyboard
@@ -160,18 +239,40 @@ export function WebSocketProvider({ children }) {
     window.addEventListener("focus", onFocusChange);
     window.addEventListener("blur", onFocusChange);
 
+    // Foreground / network back: don't wait out the backoff. A socket that
+    // still reports OPEN after an iOS resume is verified with a probe.
+    const offResume = onNetworkResume(() => {
+      reconnectDelay.current = INITIAL_RECONNECT_MS;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        probeLiveness();
+        return;
+      }
+      if (ws) {
+        dropSocket(ws); // CONNECTING / CLOSING: abandon it and retry now
+        return;
+      }
+      scheduleReconnect(0);
+    });
+
     return () => {
       clearInterval(pingInterval);
       clearInterval(viewingResyncInterval);
       clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+      clearTimeout(pongTimer.current);
+      pongTimer.current = null;
+      offResume();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocusChange);
       window.removeEventListener("blur", onFocusChange);
-      if (wsRef.current) {
-        wsRef.current.close();
+      const ws = wsRef.current;
+      if (ws) {
+        wsRef.current = null;
+        ws.close();
       }
     };
-  }, [connect, _syncViewing]);
+  }, [connect, _syncViewing, probeLiveness, dropSocket, scheduleReconnect]);
 
   // Public API for components to send messages
   const sendWsMessage = useCallback((data) => {
