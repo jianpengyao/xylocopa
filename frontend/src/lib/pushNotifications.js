@@ -29,6 +29,11 @@ function setPushEnabled(v) {
  * Register service worker, subscribe to push, and send subscription to backend.
  * Returns true on success, false on failure.
  */
+// How long setupPushNotifications waits for the app's own service worker
+// (registered by main.jsx on window 'load') before registering the
+// standalone push-handler.js fallback.
+const SW_READY_WAIT_MS = 5000;
+
 export async function setupPushNotifications() {
   if (!isPushSupported()) {
     console.debug("[push] setup skipped: PushManager not supported");
@@ -47,7 +52,18 @@ export async function setupPushNotifications() {
     // SW installs), register push-handler.js as a temporary standalone SW.
     // Once VitePWA's SW activates (includes push-handler.js via importScripts),
     // this standalone registration gets replaced automatically.
-    const existing = await navigator.serviceWorker.getRegistration();
+    //
+    // Give the real SW a moment first: main.jsx registers it on window
+    // 'load', which can land after this auth-gated setup. Two register()
+    // calls at the same scope race, and if push-handler.js won the app
+    // would run without its precache worker until the next update check.
+    let existing = await navigator.serviceWorker.getRegistration();
+    if (!existing) {
+      existing = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => setTimeout(() => resolve(null), SW_READY_WAIT_MS)),
+      ]);
+    }
     if (!existing) {
       console.debug("[push] no SW yet, registering push-handler.js as fallback");
       await navigator.serviceWorker.register("/push-handler.js");

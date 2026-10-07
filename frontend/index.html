@@ -128,10 +128,18 @@
           if(!/\/assets\/.+\.(js|css|mjs)(\?|$)/.test(src)) return;
           recover();
         }, true);
+        // Only genuine module-import failures (stale chunk hash / wrong MIME)
+        // count. The generic fetch errors ("Load failed" on Safari,
+        // "NetworkError" on Firefox) that used to be matched here fire for
+        // ANY failed request during a network blip, and recover() would then
+        // unregister the SW and replace the page mid-outage — turning a
+        // transient drop into a dead error page. Likewise skip while the
+        // browser knows it is offline: a reload cannot help.
         window.addEventListener("unhandledrejection", function(e){
           var msg = (e && e.reason && (e.reason.message || e.reason)) || "";
           msg = String(msg);
-          if(/Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|is not a valid JavaScript MIME type|disallowed MIME type|FetchEvent.*network error|network error.*FetchEvent|Load failed|NetworkError when attempting to fetch/i.test(msg)){
+          if(/Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|is not a valid JavaScript MIME type|disallowed MIME type/i.test(msg)){
+            if(navigator.onLine === false) return;
             recover();
           }
         });
