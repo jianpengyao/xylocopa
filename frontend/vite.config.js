@@ -4,6 +4,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { runtimeCaching } from './sw-runtime-caching.js'
 
 // Load self-signed certs for HTTPS (needed for microphone access over LAN)
 const certsDir = path.resolve(__dirname, '../certs')
@@ -73,83 +74,31 @@ export default defineConfig({
       // tabs see fresh HTML on next navigation without the "zombie SW
       // serving stale cached index.html" failure mode that made cert-regen
       // recovery require website-data clearing.
+      //
+      // The SW never handles navigations or /api requests at all (no route
+      // matches them, so respondWith is never called and the browser's own
+      // network stack serves them). See sw-runtime-caching.js for why: a
+      // NetworkOnly route turned every transient fetch failure inside the
+      // SW into an unrecoverable "FetchEvent.respondWith received an error"
+      // page on iOS.
       registerType: 'autoUpdate',
       devOptions: { enabled: true },
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
         // No 'html' here — index.html is NOT precached. Navigation requests
-        // go straight to the network (NetworkOnly route below), so a TLS
-        // failure surfaces as Safari's warning page instead of a silent
-        // SW-served stale shell.
+        // are not intercepted by the SW at all, so a network or TLS failure
+        // surfaces as the browser's own (recoverable) error page instead of
+        // a silent SW-served stale shell or a SW error page.
         globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
         // Import existing push notification handler into generated SW
         importScripts: ['/push-handler.js'],
         // Belt-and-suspenders: explicitly tell Workbox NOT to register a
-        // default NavigationRoute for SPA fallback (we use NetworkOnly
-        // below).  Without this, vite-plugin-pwa would auto-register one
-        // that serves precached index.html as the SPA shell.
+        // default NavigationRoute for SPA fallback. Without this,
+        // vite-plugin-pwa would auto-register one that serves precached
+        // index.html as the SPA shell (and could fail the navigation).
         navigateFallback: null,
-        runtimeCaching: [
-          // Navigation requests (top-level page loads) — go straight to
-          // network. If TLS / network fails, Safari shows its own warning
-          // page or "no internet" UX, which is recoverable. If we cached
-          // and served stale HTML here, fetches inside the page would fail
-          // silently after cert changes and the user would have to clear
-          // website data manually.
-          {
-            urlPattern: ({ request }) => request.mode === 'navigate',
-            handler: 'NetworkOnly',
-          },
-          // Fluent UI emoji SVGs from jsdelivr — immutable assets, cache forever
-          {
-            urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/gh\/microsoft\/fluentui-emoji.*\.svg$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'fluent-emoji-cache',
-              expiration: { maxEntries: 300, maxAgeSeconds: 365 * 24 * 60 * 60 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          // Thumbnails — cached aggressively (small files, rarely change)
-          {
-            urlPattern: /\.thumb\.jpg$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'thumbnail-cache',
-              expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
-            },
-          },
-          // Image thumbnails — cached aggressively (small JPEG, rarely change)
-          {
-            urlPattern: /\/api\/thumbs\//,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'thumbnail-cache',
-              expiration: { maxEntries: 500, maxAgeSeconds: 7 * 24 * 60 * 60 },
-            },
-          },
-          // Files/uploads must bypass SW cache — Safari requires intact
-          // HTTP Range responses for <video> playback and Workbox caching
-          // strategies strip/corrupt the 206 + Content-Range semantics.
-          {
-            urlPattern: /\/api\/(?:files|uploads)\//,
-            handler: 'NetworkOnly',
-          },
-          // Polling endpoints refresh every 3-10s — caching adds SW
-          // overhead with zero benefit.  NetworkOnly bypasses cache entirely.
-          {
-            urlPattern: /^.*\/api\/.*/,
-            handler: 'NetworkOnly',
-          },
-          // Catch-all: any request not matched above goes straight to
-          // network. Prevents Workbox from returning an empty response
-          // (no-response) when a stale SW has outdated routing rules.
-          {
-            urlPattern: () => true,
-            handler: 'NetworkOnly',
-          },
-        ],
+        runtimeCaching,
       },
       manifest: {
         name: 'Xylocopa',
