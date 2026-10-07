@@ -5,6 +5,7 @@ import CertGuidePage, { CERT_FLOW_KEY, CERT_FLOW_TTL_MS } from "./pages/CertGuid
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchClaudeMdPending, getAuthToken } from "./lib/api";
+import { nextBackoff, onNetworkResume } from "./lib/reconnect";
 import { isPushSupported, setupPushNotifications, reRegisterExistingSubscription } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
@@ -22,6 +23,9 @@ import BottomNavBar from "./components/BottomNavBar";
 import RouteFallback from "./components/skeletons/RouteFallback";
 
 const MODULE_RELOAD_KEY = "ah:module-import-reload-attempted";
+// Server-down probe cadence (AuthGuard): 2s, growing 1.5x to a 10s cap, forever.
+const SERVER_PROBE_INITIAL_MS = 2000;
+const SERVER_PROBE_MAX_MS = 10000;
 
 async function clearModuleCachesBestEffort() {
   try {
@@ -48,7 +52,11 @@ function lazyPage(importer) {
   // Promise between preload() and the lazy factory means a preloaded route
   // mounts without ever showing the Suspense fallback.
   let cached = null;
-  const load = () => {
+  // `prefetch`: an idle-time warm-up (lib/prefetchChunks.js). It may fail
+  // quietly on a flaky link and must never escalate to the unregister+reload
+  // recovery below — that used to yank the freshly loaded app ~3s after boot
+  // whenever the network was flapping, right into a dead error page.
+  const load = ({ prefetch = false } = {}) => {
     if (cached) return cached;
     cached = (async () => {
       let lastErr;
@@ -62,6 +70,7 @@ function lazyPage(importer) {
           if (attempt < 3) await new Promise((r) => setTimeout(r, 1000));
         }
       }
+      if (prefetch) throw lastErr;
       // All retries exhausted — one-time reload as last resort
       let shouldReload = true;
       try {
@@ -77,8 +86,8 @@ function lazyPage(importer) {
     })().catch((err) => { cached = null; throw err; });
     return cached;
   };
-  const Component = lazy(load);
-  Component.preload = load;
+  const Component = lazy(() => load());
+  Component.preload = () => load({ prefetch: true });
   return Component;
 }
 
@@ -114,7 +123,15 @@ function AuthGuard({ children }) {
   const [checked, setChecked] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [serverDown, setServerDown] = useState(false);
-  const [retrying, setRetrying] = useState(false);
+  // Latest navigate() without making it an effect dependency: under
+  // <BrowserRouter>, useNavigate() returns a new function on every pathname
+  // change, and the auth check used to re-run on every in-app navigation —
+  // one transient failure while tapping a tab unmounted the whole app
+  // behind the reconnect screen.
+  const navigateRef = useRef(navigate);
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
+  // Set by the server-down probe effect; lets the Retry button probe now.
+  const retryNowRef = useRef(null);
 
   // Auto-lock after 30 min of inactivity (clears token + redirects to login)
   useIdleLock(navigate);
@@ -123,92 +140,110 @@ function AuthGuard({ children }) {
   useEffect(() => {
     const handler = () => {
       clearAuthToken("auth-expired-event");
-      navigate("/login", { replace: true });
+      navigateRef.current("/login", { replace: true });
     };
     window.addEventListener("auth-expired", handler);
     return () => window.removeEventListener("auth-expired", handler);
-  }, [navigate]);
+  }, []);
 
   // If the user just clicked the CA-cert download on /cert-guide, the same-tab
   // navigation can land them at "/" with no auth. Bounce them back to
   // /cert-guide instead of /login (consume once, TTL-bounded).
-  const consumeCertFlowRedirect = () => {
+  const consumeCertFlowRedirect = useCallback(() => {
     const ts = sessionStorage.getItem(CERT_FLOW_KEY);
     if (!ts) return false;
     sessionStorage.removeItem(CERT_FLOW_KEY);
     if (Date.now() - Number(ts) > CERT_FLOW_TTL_MS) return false;
-    navigate("/cert-guide", { replace: true });
+    navigateRef.current("/cert-guide", { replace: true });
     return true;
-  };
+  }, []);
 
-  // Attempt auth check with auto-retry for transient server-down (e.g. restart)
-  const attemptAuth = (token) => {
-    const doCheck = () =>
-      authCheck()
-        .then((r) => {
-          if (r.authenticated) {
-            setAuthed(true);
-            setServerDown(false);
-            // Always re-send existing subscription to backend (works in dev mode too)
-            reRegisterExistingSubscription();
-            // Full setup (SW registration + new subscription) only in production
-            if (isPushSupported()) {
-              setupPushNotifications().catch((err) => {
-                console.warn("Push notification setup failed:", err);
-              });
-            }
-          } else if (token) {
-            clearAuthToken("authcheck-not-authenticated");
-            if (!consumeCertFlowRedirect()) navigate("/login", { replace: true });
-          } else {
-            if (!consumeCertFlowRedirect()) navigate("/login", { replace: true });
+  // One auth check. Network failures / 5xx flip to the server-down screen,
+  // whose probe keeps trying until the server answers (see below).
+  const attemptAuth = useCallback((token) => {
+    authCheck()
+      .then((r) => {
+        if (r.authenticated) {
+          setAuthed(true);
+          setServerDown(false);
+          // Always re-send existing subscription to backend (works in dev mode too)
+          reRegisterExistingSubscription();
+          // Full setup (SW registration + new subscription) only in production
+          if (isPushSupported()) {
+            setupPushNotifications().catch((err) => {
+              console.warn("Push notification setup failed:", err);
+            });
           }
-          setChecked(true);
-        })
-        .catch((err) => {
-          // Network failures (TypeError from fetch) or 5xx → server is down
-          // 401 is handled inside request() via auth-expired event
-          if (err instanceof TypeError || (err.message && /^HTTP 5\d\d/.test(err.message))) {
-            setServerDown(true);
-          } else {
-            console.warn("Auth check failed with unexpected error:", err);
-            setServerDown(true);
-          }
-          setChecked(true);
-        });
-    doCheck();
-  };
+        } else if (token) {
+          clearAuthToken("authcheck-not-authenticated");
+          if (!consumeCertFlowRedirect()) navigateRef.current("/login", { replace: true });
+        } else {
+          if (!consumeCertFlowRedirect()) navigateRef.current("/login", { replace: true });
+        }
+        setChecked(true);
+      })
+      .catch((err) => {
+        // Network failures (TypeError from fetch) or 5xx → server is down.
+        // 401 is handled inside request() via auth-expired event.
+        const expected = err instanceof TypeError || (err.message && /^HTTP 5\d\d/.test(err.message));
+        if (!expected) console.warn("Auth check failed with unexpected error:", err);
+        setServerDown(true);
+        setChecked(true);
+      });
+  }, [consumeCertFlowRedirect]);
 
+  // Once on mount — not on every route change (see navigateRef above).
   useEffect(() => {
     attemptAuth(getAuthToken());
-  }, [navigate]);
+  }, [attemptAuth]);
 
-  // Auto-retry when server is down (polls every 2s for up to 60s)
+  // Server-down probe: never gives up. Capped backoff (2s → 10s), plus an
+  // immediate probe when the PWA is foregrounded or the browser reports the
+  // network is back. The previous 60s give-up left a dead "Unable to reach
+  // server" screen whose only exit was a full page reload — which, with the
+  // old service worker, re-entered the very route that was failing.
   useEffect(() => {
     if (!serverDown) return;
-    setRetrying(true);
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
+    let cancelled = false;
+    let inFlight = false;
+    let timer = null;
+    let delay = SERVER_PROBE_INITIAL_MS;
+    const probe = async () => {
+      timer = null;
+      if (inFlight) return;
+      inFlight = true;
       try {
         await authCheck();
+        if (cancelled) return;
         // Server is back — soft reset: re-run auth flow without unmounting the app
-        clearInterval(interval);
         setServerDown(false);
-        setRetrying(false);
         setChecked(false);           // causes the Loading... state to render briefly
         attemptAuth(getAuthToken()); // re-run the normal auth flow — this will set checked+authed again
-      } catch (err) {
-        if (attempts >= 30) {
-          // 60s elapsed — stop auto-retry, keep manual button
-          console.warn("Server reconnect gave up after 60s, last error:", err);
-          clearInterval(interval);
-          setRetrying(false);
-        }
+      } catch {
+        if (cancelled) return;
+        timer = setTimeout(probe, delay);
+        delay = nextBackoff(delay, { max: SERVER_PROBE_MAX_MS });
+      } finally {
+        inFlight = false;
       }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [serverDown]);
+    };
+    const probeNow = () => {
+      if (cancelled) return;
+      clearTimeout(timer);
+      timer = null;
+      delay = SERVER_PROBE_INITIAL_MS;
+      probe();
+    };
+    retryNowRef.current = probeNow;
+    timer = setTimeout(probe, SERVER_PROBE_INITIAL_MS);
+    const offResume = onNetworkResume(probeNow);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      offResume();
+      retryNowRef.current = null;
+    };
+  }, [serverDown, attemptAuth]);
 
   if (!checked) {
     return (
@@ -221,17 +256,20 @@ function AuthGuard({ children }) {
   if (serverDown) {
     return (
       <div className="flex flex-col items-center justify-center h-full bg-page gap-4">
-        {retrying ? (
-          <p className="text-label text-sm animate-pulse">Reconnecting to server...</p>
-        ) : (
-          <p className="text-label text-sm">Unable to reach server</p>
-        )}
+        <p className="text-label text-sm animate-pulse">Reconnecting to server...</p>
+        <button
+          type="button"
+          onClick={() => retryNowRef.current?.()}
+          className="px-4 py-2 rounded-lg bg-accent text-white text-sm hover:bg-accent transition-colors"
+        >
+          Retry now
+        </button>
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="px-4 py-2 rounded-lg bg-accent text-white text-sm hover:bg-accent transition-colors"
+          className="text-dim text-xs underline"
         >
-          Retry
+          Reload page
         </button>
       </div>
     );
@@ -525,21 +563,33 @@ export default function App() {
   const [swState, setSwState] = useState('checking');
   useEffect(() => {
     if (!('serviceWorker' in navigator)) { setSwState('ready'); return; }
-    let cancelled = false;
+    // `settled` makes the gate one-way: once released (by the update check,
+    // the worker settling, or the 8s cap) a late reg.update() result can no
+    // longer flip the UI back to "Updating…" with nothing left to release it
+    // — on a slow link that used to strand the app on that screen.
+    let settled = false;
+    const release = () => { if (!settled) { settled = true; setSwState('ready'); } };
     (async () => {
       try {
         const reg = await navigator.serviceWorker.getRegistration();
-        if (!reg) { if (!cancelled) setSwState('ready'); return; }
+        if (!reg) { release(); return; }
         try { await reg.update(); } catch { /* offline — proceed */ }
-        if (cancelled) return;
-        setSwState(reg.installing || reg.waiting ? 'updating' : 'ready');
+        if (settled) return;
+        const pending = reg.installing || reg.waiting;
+        if (!pending) { release(); return; }
+        setSwState('updating');
+        // vite-plugin-pwa reloads the page when the update activates; if that
+        // does not happen (iOS), release the gate once the worker settles.
+        pending.addEventListener('statechange', () => {
+          if (pending.state === 'activated' || pending.state === 'redundant') release();
+        });
       } catch {
-        if (!cancelled) setSwState('ready');
+        release();
       }
     })();
     // Safety: never sit on the gate forever
-    const timer = setTimeout(() => { if (!cancelled) setSwState('ready'); }, 8000);
-    return () => { cancelled = true; clearTimeout(timer); };
+    const timer = setTimeout(release, 8000);
+    return () => { settled = true; clearTimeout(timer); };
   }, []);
 
   // Service Worker notification click — split-screen aware navigation.
