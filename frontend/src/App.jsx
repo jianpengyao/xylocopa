@@ -4,7 +4,7 @@ import LoginPage from "./pages/LoginPage";
 import CertGuidePage, { CERT_FLOW_KEY, CERT_FLOW_TTL_MS } from "./pages/CertGuidePage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
-import { authCheck, clearAuthToken, fetchClaudeMdPending, getAuthToken } from "./lib/api";
+import { authCheck, clearAuthToken, fetchClaudeMdPending, getAuthToken, resolveAuthDisabled } from "./lib/api";
 import { nextBackoff, onNetworkResume } from "./lib/reconnect";
 import { isPushSupported, setupPushNotifications, reRegisterExistingSubscription } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
@@ -123,6 +123,9 @@ function AuthGuard({ children }) {
   const [checked, setChecked] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [serverDown, setServerDown] = useState(false);
+  // Server runs with DISABLE_AUTH: no password anywhere, so the idle lock
+  // (which clears the token and bounces to /login) must stay off.
+  const [authDisabled, setAuthDisabled] = useState(false);
   // Latest navigate() without making it an effect dependency: under
   // <BrowserRouter>, useNavigate() returns a new function on every pathname
   // change, and the auth check used to re-run on every in-app navigation —
@@ -134,7 +137,7 @@ function AuthGuard({ children }) {
   const retryNowRef = useRef(null);
 
   // Auto-lock after 30 min of inactivity (clears token + redirects to login)
-  useIdleLock(navigate);
+  useIdleLock(navigate, { enabled: !authDisabled });
 
   // Listen for auth-expired events dispatched by api.js (graceful 401 handling)
   useEffect(() => {
@@ -166,6 +169,7 @@ function AuthGuard({ children }) {
         if (r.authenticated) {
           setAuthed(true);
           setServerDown(false);
+          resolveAuthDisabled(r).then(setAuthDisabled).catch(() => {});
           // Always re-send existing subscription to backend (works in dev mode too)
           reRegisterExistingSubscription();
           // Full setup (SW registration + new subscription) only in production
@@ -467,7 +471,9 @@ function AppChrome({ themeProps }) {
   useEffect(() => {
     if (!visible) return;
     const poll = () => {
-      if (pathnameRef.current === "/login" || !getAuthToken()) return;
+      // AuthGuard already guarantees we are authenticated here; gating on a
+      // stored token silently disabled this poll whenever auth is off.
+      if (pathnameRef.current === "/login") return;
       fetchClaudeMdPending().then((r) => setClaudeMdPending(r.count || 0)).catch((err) => {
         console.warn("Claude MD pending poll failed:", err);
       });

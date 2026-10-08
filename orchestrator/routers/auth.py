@@ -58,11 +58,13 @@ def _seed_default_project(db: Session, request: Request) -> None:
 @router.post("/check")
 async def auth_check(request: Request, db: Session = Depends(get_db)):
     """Check auth state — returns whether password is set and if token is valid."""
+    # auth_disabled lets the frontend skip its own password machinery
+    # (idle lock, login redirects) when the server does no password check.
     if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
-        return {"authenticated": True, "needs_setup": False}
+        return {"authenticated": True, "needs_setup": False, "auth_disabled": True}
     pw_hash = get_password_hash(db)
     if pw_hash is None:
-        return {"authenticated": False, "needs_setup": True}
+        return {"authenticated": False, "needs_setup": True, "auth_disabled": False}
 
     # Password is set — verify the bearer token if provided
     auth_header = request.headers.get("authorization", "")
@@ -70,9 +72,9 @@ async def auth_check(request: Request, db: Session = Depends(get_db)):
         token = auth_header[7:]
         jwt_secret = get_jwt_secret(db)
         if verify_token(token, jwt_secret):
-            return {"authenticated": True, "needs_setup": False}
+            return {"authenticated": True, "needs_setup": False, "auth_disabled": False}
 
-    return {"authenticated": False, "needs_setup": False}
+    return {"authenticated": False, "needs_setup": False, "auth_disabled": False}
 
 
 @router.post("/set-password")

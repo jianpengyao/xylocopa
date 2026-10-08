@@ -34,8 +34,12 @@ function idleMs() {
  *
  * Listens to pointer, keyboard, and touch events (NOT scroll — programmatic
  * scrolls from auto-scroll and microScroll would reset the timer falsely).
+ *
+ * `enabled: false` (server runs with DISABLE_AUTH, i.e. no password at all)
+ * turns the lock off entirely: there is nothing to protect, and locking
+ * only bounced the user through /login back to the home page every 30 min.
  */
-export default function useIdleLock(navigate) {
+export default function useIdleLock(navigate, { enabled = true } = {}) {
   const lock = useCallback(() => {
     if (!clearAuthToken("idle-lock")) return; // grace period blocked clear
     localStorage.removeItem(ACTIVITY_KEY);
@@ -43,6 +47,7 @@ export default function useIdleLock(navigate) {
   }, [navigate]);
 
   useEffect(() => {
+    if (!enabled) return;
     // On mount, check if already idle too long.
     // If lock() returns early (grace period blocked), fall through to
     // normal setup so touch() and event listeners are registered.
@@ -97,5 +102,5 @@ export default function useIdleLock(navigate) {
       document.removeEventListener("visibilitychange", visibilityHandler);
       clearInterval(intervalId);
     };
-  }, [lock]);
+  }, [lock, enabled]);
 }

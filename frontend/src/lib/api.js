@@ -173,6 +173,25 @@ async function request(url, opts = {}) {
 // --- Auth ---
 export const authCheck = () =>
   request("/api/auth/check", { method: "POST" });
+
+/**
+ * True when the server runs with DISABLE_AUTH (no password check at all), so
+ * the frontend should skip its own password machinery (idle lock, login
+ * redirects). Newer backends report `auth_disabled` in /api/auth/check; an
+ * older backend is probed with a token-less check, which only answers
+ * "authenticated" when auth is disabled.
+ */
+export async function resolveAuthDisabled(checkResult) {
+  if (typeof checkResult?.auth_disabled === "boolean") return checkResult.auth_disabled;
+  try {
+    const res = await fetch(`${BASE}/api/auth/check`, { method: "POST" });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body?.authenticated === true;
+  } catch {
+    return false;
+  }
+}
 export const authLogin = async (password) => {
   const res = await fetch("/api/auth/login", {
     method: "POST",
