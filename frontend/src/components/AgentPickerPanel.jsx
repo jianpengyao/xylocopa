@@ -39,7 +39,8 @@ export default function AgentPickerPanel({ onSelect }) {
       <div className="shrink-0 px-4 py-3 border-b border-divider bg-surface">
         <h3 className="text-sm font-semibold text-heading mb-2">Select Agent</h3>
         <input
-          type="text"
+          type="search"
+          autoComplete="off"
           placeholder="Search agents..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}

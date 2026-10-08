@@ -130,6 +130,7 @@ export default function FloatingTaskCard({ taskId, onClose, onAction }) {
             <div className="flex-1 min-w-0">
               {editingTitle ? (
                 <input
+                  autoComplete="off"
                   autoFocus
                   value={titleDraft}
                   onChange={(e) => setTitleDraft(e.target.value)}

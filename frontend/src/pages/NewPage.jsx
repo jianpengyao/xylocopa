@@ -54,7 +54,7 @@ function NewProjectForm({ showToast, navigate }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} autoComplete="off" className="space-y-5">
       <div className="rounded-xl bg-surface shadow-card p-4 space-y-4">
         <div>
           <label className="block text-sm font-medium text-label mb-2">
@@ -62,6 +62,8 @@ function NewProjectForm({ showToast, navigate }) {
           </label>
           <input
             type="text"
+            name="project-name"
+            autoComplete="off"
             value={name}
             onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ""))}
             placeholder="my-project"
@@ -74,9 +76,11 @@ function NewProjectForm({ showToast, navigate }) {
           <label className="block text-sm font-medium text-label mb-2">Git URL</label>
           <input
             type="text"
+            name="git-url"
+            autoComplete="off"
             value={gitUrl}
             onChange={(e) => setGitUrl(e.target.value)}
-            placeholder="https://github.com/user/repo.git"
+            placeholder="https://github.com/org/repo.git"
             className="w-full min-h-[44px] rounded-lg bg-input border border-edge px-3 py-2 text-heading placeholder-hint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent transition-colors"
           />
         </div>

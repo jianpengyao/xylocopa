@@ -2351,3 +2351,19 @@ mark.search-hit {
   padding: 0 2px;
   margin: 0 -1px;
 }
+
+/* Search boxes use type="search" so Safari's password AutoFill never treats a
+   lone search field as a "username-first" login field (it ignores
+   autocomplete="off" for anything login-shaped). Strip WebKit's native
+   searchfield chrome so they still look like our text inputs. */
+input[type="search"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-results-button,
+input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  display: none;
+}

@@ -520,6 +520,7 @@ export default function NewTaskPage({ embedded = false, onClose, contextPath }) 
         >
           <form
             onSubmit={handleSubmit}
+            autoComplete="off"
             className="relative"
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
@@ -605,6 +606,8 @@ export default function NewTaskPage({ embedded = false, onClose, contextPath }) 
                   extra={worktree ? (
                     <input
                       type="text"
+                      name="worktree-name"
+                      autoComplete="off"
                       placeholder={worktree === "..." ? "generating..." : "name (blank = auto)"}
                       value={worktree === "auto" || worktree === "..." ? "" : worktree}
                       onClick={(e) => e.stopPropagation()}

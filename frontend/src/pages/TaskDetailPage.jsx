@@ -258,6 +258,7 @@ export default function TaskDetailPage({ theme, onToggleTheme }) {
               <div>
                 <label className="block text-xs font-medium text-label mb-1">Title</label>
                 <input
+                  autoComplete="off"
                   type="text"
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}

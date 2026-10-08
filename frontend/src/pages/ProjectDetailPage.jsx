@@ -1173,7 +1173,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           <path strokeLinecap="round" d="m21 21-4.35-4.35" />
         </svg>
         <input
-          type="text"
+          type="search"
+          autoComplete="off"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search agents, messages & files..."

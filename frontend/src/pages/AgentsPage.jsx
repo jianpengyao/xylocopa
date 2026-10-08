@@ -667,7 +667,8 @@ export default function AgentsPage({ theme, onToggleTheme, isActive = true }) {
             <path strokeLinecap="round" d="m21 21-4.35-4.35" />
           </svg>
           <input
-            type="text"
+            type="search"
+            autoComplete="off"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search agents & messages..."
