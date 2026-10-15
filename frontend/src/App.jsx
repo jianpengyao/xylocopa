@@ -23,6 +23,7 @@ import BottomNavBar from "./components/BottomNavBar";
 import RouteFallback from "./components/skeletons/RouteFallback";
 
 const MODULE_RELOAD_KEY = "ah:module-import-reload-attempted";
+const AUTH_DISABLED_KEY = "xy:auth-disabled";
 // Server-down probe cadence (AuthGuard): 2s, growing 1.5x to a 10s cap, forever.
 const SERVER_PROBE_INITIAL_MS = 2000;
 const SERVER_PROBE_MAX_MS = 10000;
@@ -149,8 +150,13 @@ function AuthGuard({ children }) {
   const [authed, setAuthed] = useState(false);
   const [serverDown, setServerDown] = useState(false);
   // Server runs with DISABLE_AUTH: no password anywhere, so the idle lock
-  // (which clears the token and bounces to /login) must stay off.
-  const [authDisabled, setAuthDisabled] = useState(false);
+  // (which clears the token and bounces to /login) must stay off. Seeded
+  // from the last auth check: useIdleLock runs on mount, before this boot's
+  // check answers, and after >30 min idle it bounced every cold start
+  // through /login (AUTH_DIAG reason=idle-lock even with DISABLE_AUTH).
+  const [authDisabled, setAuthDisabled] = useState(() => {
+    try { return localStorage.getItem(AUTH_DISABLED_KEY) === "1"; } catch { return false; }
+  });
   // Latest navigate() without making it an effect dependency: under
   // <BrowserRouter>, useNavigate() returns a new function on every pathname
   // change, and the auth check used to re-run on every in-app navigation —
@@ -194,7 +200,13 @@ function AuthGuard({ children }) {
         if (r.authenticated) {
           setAuthed(true);
           setServerDown(false);
-          resolveAuthDisabled(r).then(setAuthDisabled).catch(() => {});
+          resolveAuthDisabled(r).then((disabled) => {
+            setAuthDisabled(disabled);
+            try {
+              if (disabled) localStorage.setItem(AUTH_DISABLED_KEY, "1");
+              else localStorage.removeItem(AUTH_DISABLED_KEY);
+            } catch { /* storage unavailable */ }
+          }).catch(() => {});
           // Always re-send existing subscription to backend (works in dev mode too)
           reRegisterExistingSubscription();
           // Full setup (SW registration + new subscription) only in production
