@@ -106,18 +106,54 @@
       // tags (regular bubbling listeners don't see these). Recovery is
       // gated by sessionStorage to prevent infinite reload loops.
       (function(){
-        var KEY="xy-chunk-recover";
+        // Last recover() time. A timestamp, not a flag cleared on 'load':
+        // 'load' fires even when the main chunk failed, so a cleared flag let
+        // a persistent failure wipe+reload in a tight loop.
+        var KEY="xy-chunk-recover", MIN_GAP_MS=30000;
+        // Does the server answer at all (any HTTP status)? The query string
+        // keeps the request out of the SW precache, so it really hits the
+        // network. GET, not HEAD: HEAD of a static file over HTTP/2 leaks a
+        // file descriptor in the preview server. Without fetch or
+        // AbortController assume yes (the old wipe).
+        function serverReachable(){
+          if(!window.fetch || !window.AbortController) return Promise.resolve(true);
+          var ctl = new AbortController();
+          var t = setTimeout(function(){ ctl.abort(); }, 8000);
+          return fetch("/manifest.webmanifest?_xs=" + Date.now(), {cache:"no-store", signal: ctl.signal})
+            .then(function(){ return true; }, function(){ return false; })
+            .then(function(ok){ clearTimeout(t); return ok; });
+        }
+        // Reload once a reload can work. A page controlled by the SW gets
+        // its auto-retrying offline page if the server is still down; an
+        // uncontrolled one (right after a wipe) would get the browser's
+        // dead error page, so it waits here until the server answers.
+        function reloadWhenSafe(){
+          if(navigator.serviceWorker && navigator.serviceWorker.controller){ location.reload(); return; }
+          serverReachable().then(function(ok){ if(ok) location.reload(); else setTimeout(reloadWhenSafe, 5000); });
+        }
+        // Wipe the SW + caches only when the server is reachable, i.e. the
+        // failure is local (stale build, broken precache). While the server
+        // is unreachable a wipe cannot help: it removes the SW's
+        // auto-retrying offline page and the push subscription, and the
+        // reload then lands on the browser's dead error page. A plain reload
+        // instead goes through the SW, which answers with that offline page.
         function recover(){
-          try { if(sessionStorage.getItem(KEY)==="1") return; sessionStorage.setItem(KEY,"1"); } catch(_){}
-          var unreg = (navigator.serviceWorker&&navigator.serviceWorker.getRegistrations)
-            ? navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister()}))})
-            : Promise.resolve();
-          unreg.then(function(){
-            return ("caches" in window) ? caches.keys().then(function(ns){return Promise.all(ns.map(function(n){return caches.delete(n)}))}) : null;
-          }).catch(function(){}).then(function(){
-            var u = new URL(location.href);
-            u.searchParams.set("_xr", Date.now());
-            location.replace(u.toString());
+          try {
+            if(Date.now() - Number(sessionStorage.getItem(KEY) || 0) < MIN_GAP_MS) return;
+            sessionStorage.setItem(KEY, String(Date.now()));
+          } catch(_){}
+          serverReachable().then(function(reachable){
+            if(!reachable){ reloadWhenSafe(); return; }
+            var unreg = (navigator.serviceWorker&&navigator.serviceWorker.getRegistrations)
+              ? navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister()}))})
+              : Promise.resolve();
+            unreg.then(function(){
+              return ("caches" in window) ? caches.keys().then(function(ns){return Promise.all(ns.map(function(n){return caches.delete(n)}))}) : null;
+            }).catch(function(){}).then(function(){
+              var u = new URL(location.href);
+              u.searchParams.set("_xr", Date.now());
+              location.replace(u.toString());
+            });
           });
         }
         window.addEventListener("error", function(e){
@@ -144,19 +180,33 @@
           }
         });
         // Boot timeout: if React hasn't mounted within 20s, the SW or
-        // a broken chunk is blocking startup. Clear everything and reload.
+        // a broken chunk is blocking startup. (A merely slow link with the
+        // server reachable also ends up wiped here.)
         var _bootTimer = setTimeout(function(){
           if(!document.getElementById("root").firstChild) recover();
         }, 20000);
         window.addEventListener("load", function(){
           clearTimeout(_bootTimer);
           try {
-            sessionStorage.removeItem(KEY);
             // The app loaded: clear the offline page's bounce tracking
             // (see public/sw-navigation.js).
             sessionStorage.removeItem("xy-offline-probe-ok");
             sessionStorage.removeItem("xy-offline-bounces");
           } catch(_){}
+          // Report what the offline page saw while the server was
+          // unreachable (logged as AUTH_DIAG action=offline-page) — only
+          // once the app has really mounted: 'load' also fires when the
+          // main chunk failed, and the record would be lost unsent.
+          setTimeout(function(){
+            try {
+              var d = JSON.parse(localStorage.getItem("xy-offline-diag") || "null");
+              if(!d || !d.probes || !navigator.sendBeacon || !document.getElementById("root").firstChild) return;
+              var why = "offline " + Math.round(((d.last||0) - (d.first||0)) / 1000) + "s before " + new Date(d.last||0).toISOString() +
+                ": probes=" + d.probes + " timeouts=" + (d.timeouts||0) + " errors=" + (d.errors||0) + " last=" + (d.why||"?");
+              if(navigator.sendBeacon("/api/debug/auth-diag", new Blob([JSON.stringify({action:"offline-page", reason: why, path: location.pathname, ts: Date.now()})], {type:"application/json"})))
+                localStorage.removeItem("xy-offline-diag");
+            } catch(_){}
+          }, 3000);
         });
       })();
     </script>

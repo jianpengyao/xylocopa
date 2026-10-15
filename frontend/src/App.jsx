@@ -46,6 +46,21 @@ async function clearModuleCachesBestEffort() {
   }
 }
 
+// Does the server answer at all (any HTTP status)? The query string keeps
+// the request out of the SW precache. Same check as recover() in index.html.
+async function serverReachable() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    await fetch(`/manifest.webmanifest?_xs=${Date.now()}`, { cache: "no-store", signal: ctl.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function lazyPage(importer) {
   // Single shared Promise per route. React.lazy reads .status synchronously
   // when its factory returns an already-settled Promise; sharing the same
@@ -78,7 +93,17 @@ function lazyPage(importer) {
         if (shouldReload) sessionStorage.setItem(MODULE_RELOAD_KEY, "1");
       } catch { }
       if (shouldReload) {
-        await clearModuleCachesBestEffort();
+        // Only drop the SW + caches when the server is reachable (stale
+        // build, broken precache). During an outage that would remove the
+        // SW's offline page and the push subscription; a plain reload lands
+        // on that auto-retrying page instead — if the SW controls this page.
+        // Uncontrolled, the reload would hit the browser's dead error page,
+        // so wait for the server first.
+        if (await serverReachable()) {
+          await clearModuleCachesBestEffort();
+        } else if (!navigator.serviceWorker?.controller) {
+          while (!(await serverReachable())) await new Promise((r) => setTimeout(r, 5000));
+        }
         window.location.reload();
         return new Promise(() => {});
       }
