@@ -117,6 +117,138 @@ def _reset_compact_abandoned(ad, agent_id: str, reason: str):
     ad.wake_sync(agent_id)
 
 
+# ---- Between-turns compaction hold ----
+#
+# Claude Code >= 2.1.300 also compacts *between* turns: after ~54 min idle
+# (just before the 1h prompt cache expires) it compacts in the background,
+# and its summary precompute can run with no turn in flight. Both fire
+# PreCompact(trigger="auto") — the same trigger as a mid-turn context-fill
+# auto-compact — and no Stop hook ever follows. The hook payloads carry no
+# field that tells them apart, but CC only compacts between turns when no
+# turn is active, so a PreCompact that finds the agent IDLE, with no
+# UserPromptSubmit/Stop in the last _TURN_HOOK_QUIET_S, is one. (The quiet
+# window keeps back-to-back turns and blocked-Stop continuations — where the
+# DB can briefly read IDLE mid-turn — on the old path; CC's idle compaction
+# fires >= 30 min after the turn ends.)
+#
+# PreCompact still flips such an agent EXECUTING (dispatch must stay
+# blocked while the pane is compacting) and takes a hold recording that the
+# flip is ours to undo. The hold ends in exactly one of these ways:
+#   - PostCompact → flush the trailing entries, flip IDLE, dispatch queued
+#   - UserPromptSubmit / Stop → a real turn owns the status; just drop it
+#   - the compaction fork's SubagentStop (unknown subagent whose output
+#     carries <summary>), then no PostCompact within
+#     _IDLE_COMPACT_FORK_GRACE_S (a summary precompute that only applies on
+#     the next turn, or a failed apply) → flip IDLE, dispatch queued
+#   - no PostCompact within _IDLE_COMPACT_MAX_S (blocked / failed / aborted
+#     compaction; real compactions have taken up to ~315s on 1M-token
+#     contexts) → flip IDLE, dispatch queued
+# Module-level rather than on SyncContext: SessionStart(source=compact)
+# rotates the session and installs a fresh SyncContext mid-window.
+_IDLE_COMPACT_FORK_GRACE_S = 30.0
+_IDLE_COMPACT_MAX_S = 600.0
+_TURN_HOOK_QUIET_S = 60.0
+_idle_compact_holds: dict[str, object] = {}
+_last_turn_hook_at: dict[str, float] = {}  # agent_id -> monotonic time of last USP/Stop
+
+
+def _note_turn_hook(agent_id: str, event: str) -> None:
+    """UserPromptSubmit / Stop: a real turn owns the status from here on."""
+    _last_turn_hook_at[agent_id] = time.monotonic()
+    if _idle_compact_holds.pop(agent_id, None) is not None:
+        logger.info("Idle compact hold dropped for %s: %s", agent_id[:8], event)
+
+
+def _take_idle_compact_hold(ad, agent_id: str) -> None:
+    """Start (or renew) the between-turns hold; a new token voids old watchdogs."""
+    token = object()
+    _idle_compact_holds[agent_id] = token
+    asyncio.ensure_future(_idle_compact_watchdog(
+        ad, agent_id, token, _IDLE_COMPACT_MAX_S, "no PostCompact",
+    ))
+
+
+def _jsonl_idle_before_last_compact(jsonl_path: str,
+                                    tail_bytes: int = 8 << 20) -> bool | None:
+    """Was the session between turns when its latest compaction started?
+
+    Fallback for a PostCompact that has no hold because the orchestrator
+    restarted mid-compaction. CC (>= 2.1.300) appends the compact_boundary,
+    so walk back from the last one to the nearest turn marker: a
+    stop_hook_summary / turn_duration entry means the previous turn had
+    ended; a user / assistant entry or a queued prompt means a turn was in
+    flight. None when undecidable (caller keeps the old behavior).
+    """
+    try:
+        with open(jsonl_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - tail_bytes))
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for i in range(len(lines) - 1, -1, -1):
+        if b'"compact_boundary"' in lines[i]:
+            break
+    else:
+        return None
+    for line in reversed(lines[:i]):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("isSidechain"):
+            continue
+        etype = entry.get("type")
+        if etype == "system" and entry.get("subtype") in ("stop_hook_summary", "turn_duration"):
+            return True
+        if etype == "queue-operation":
+            return False
+        if etype in ("user", "assistant") and not entry.get("isMeta"):
+            return False
+    return None
+
+
+def _flip_executing_to_idle(agent_id: str, reason: str) -> bool:
+    """EXECUTING → IDLE (DB + WS emit). Returns True if it flipped."""
+    db = SessionLocal()
+    try:
+        ag = db.get(Agent, agent_id)
+        if not ag or ag.status != AgentStatus.EXECUTING:
+            return False
+        ag.status = AgentStatus.IDLE
+        ag.generating_msg_id = None
+        db.commit()
+        from websocket import emit_agent_update
+        asyncio.ensure_future(emit_agent_update(agent_id, "IDLE", ag.project))
+        logger.info("%s: agent %s → IDLE", reason, agent_id[:8])
+        return True
+    except Exception:
+        db.rollback()
+        logger.exception("%s: failed to flip %s to IDLE", reason, agent_id[:8])
+        return False
+    finally:
+        db.close()
+
+
+async def _idle_compact_watchdog(ad, agent_id: str, token: object,
+                                 delay: float, reason: str) -> None:
+    """Release the hold if it is still `token` after `delay` seconds."""
+    await asyncio.sleep(delay)
+    if _idle_compact_holds.get(agent_id) is not token:
+        return
+    del _idle_compact_holds[agent_id]
+    logger.warning("Idle compact hold expired for %s after %.0fs (%s)",
+                   agent_id[:8], delay, reason)
+    flipped = _flip_executing_to_idle(agent_id, "Idle compact hold expired")
+    try:
+        _reset_compact_abandoned(ad, agent_id, reason)
+    except Exception:
+        logger.exception("Idle compact hold: compact-flag reset failed for %s",
+                         agent_id[:8])
+    if flipped:
+        await ad.dispatch_pending_message(agent_id, delay=0)
+
+
 async def _note_dropbox_activity(agent_id: str, reason: str) -> None:
     """Fire-and-forget helper: notify dropbox sync engine of agent activity.
 
@@ -428,6 +560,8 @@ async def hook_agent_user_prompt(request: Request):
         return {}
 
     logger.info("hook_agent_user_prompt: received for agent %s", agent_id[:8])
+    # A real turn now owns EXECUTING; its Stop ends it, not PostCompact.
+    _note_turn_hook(agent_id, "UserPromptSubmit")
 
     ad = getattr(request.app.state, "agent_dispatcher", None)
     if ad:
@@ -517,6 +651,9 @@ async def hook_agent_stop(request: Request):
                     hook_sid[:12], agent_id[:8])
         return {}
 
+    # A turn ended — sync flips IDLE from its stop_hook_summary.
+    _note_turn_hook(agent_id, "Stop")
+
     # Notify dropbox sync of agent turn end
     asyncio.ensure_future(_note_dropbox_activity(agent_id, "stop"))
 
@@ -570,13 +707,15 @@ async def hook_agent_post_compact(request: Request):
       3. Drain + run compact full_scan so /compact mark-completed, boundary
          bubbles, and tool_activity finalization land before the hook
          returns.
-      4. Decide the EXECUTING→IDLE transition from `body["trigger"]`:
-           manual → user-invoked /compact, turn is over → flip IDLE
-           auto   → context-fill auto-compact, original task continues → no-op
-         Reading `trigger` straight from this hook's payload (instead of
-         stashing it on SyncContext during PreCompact and reading it back
-         here) keeps the decision self-contained and immune to the ctx
-         rotation that happens between PreCompact and PostCompact.
+      4. Decide the EXECUTING→IDLE transition:
+           manual              → user-invoked /compact, turn is over → flip IDLE
+           auto, idle hold     → between-turns compaction (CC idle compaction;
+                                 agent was IDLE at PreCompact) → flip IDLE
+           auto, no hold       → mid-turn context-fill auto-compact, original
+                                 task continues → no-op (its Stop ends it)
+         The hold lives in `_idle_compact_holds` (module-level), not on
+         SyncContext, so it survives the ctx rotation that happens between
+         PreCompact and PostCompact.
     """
     try:
         body = await request.json()
@@ -644,44 +783,54 @@ async def hook_agent_post_compact(request: Request):
     # self-checks agent.status and bails while EXECUTING, so no early
     # dispatch can sneak through.
     #
-    # For auto-compact the agent stays EXECUTING anyway (original task
-    # continues), so only manual needs the deferred path.
+    # A mid-turn auto-compact stays EXECUTING (original task continues), so
+    # only manual and between-turns (idle hold) compactions take this path.
+    # For idle compaction CC appends its "Compacted while idle" notice right
+    # after this hook returns — the flush wait lands it before the dispatch.
     _trigger = (body.get("trigger") if isinstance(body, dict) else None) or "manual"
-    if _trigger != "manual":
+    _hold = _idle_compact_holds.get(agent_id)
+    if _trigger != "manual" and _hold is None and agent_id not in _last_turn_hook_at:
+        # No hold and no turn hook seen by this process: the orchestrator
+        # restarted mid-compaction and lost the in-memory hold. Ask the
+        # JSONL whether a turn was in flight when the compaction started.
+        _ctx_now = ad._sync_contexts.get(agent_id)
+        if _ctx_now and _ctx_now.jsonl_path and _jsonl_idle_before_last_compact(_ctx_now.jsonl_path):
+            logger.info(
+                "PostCompact: no hold for %s (restart?) but JSONL shows the "
+                "compaction started between turns", agent_id[:8],
+            )
+            _take_idle_compact_hold(ad, agent_id)
+            _hold = _idle_compact_holds.get(agent_id)
+    if _trigger != "manual" and _hold is None:
         logger.info(
-            "PostCompact: trigger=%s, keep agent %s EXECUTING",
+            "PostCompact: trigger=%s mid-turn, keep agent %s EXECUTING",
             _trigger, agent_id[:8],
         )
     else:
+        if _hold is not None:
+            logger.info(
+                "PostCompact: trigger=%s between turns (agent %s was idle at "
+                "PreCompact), returning it to IDLE",
+                _trigger, agent_id[:8],
+            )
+
         async def _post_compact_finalize():
             flushed = await _await_jsonl_flush(ad, agent_id, timeout=8.0)
             if flushed:
                 await ad._drain_session_sync(agent_id)
 
-            _db_pc = SessionLocal()
-            try:
-                _ag_pc = _db_pc.get(Agent, agent_id)
-                if _ag_pc and _ag_pc.status == AgentStatus.EXECUTING:
-                    _ag_pc.status = AgentStatus.IDLE
-                    _ag_pc.generating_msg_id = None
-                    _db_pc.commit()
-                    from websocket import emit_agent_update as _eau_pc
-                    asyncio.ensure_future(_eau_pc(
-                        agent_id, "IDLE", _ag_pc.project,
-                    ))
+            if _hold is not None:
+                if _idle_compact_holds.get(agent_id) is not _hold:
+                    # A turn started during the flush wait (UserPromptSubmit
+                    # dropped the hold) or a watchdog already released it.
                     logger.info(
-                        "PostCompact: summary synced, agent %s → IDLE",
-                        agent_id[:8],
+                        "PostCompact: idle hold for %s gone before finalize, "
+                        "leaving status alone", agent_id[:8],
                     )
-            except Exception:
-                _db_pc.rollback()
-                logger.exception(
-                    "PostCompact: failed to flip status for %s",
-                    agent_id[:8],
-                )
-            finally:
-                _db_pc.close()
+                    return
+                del _idle_compact_holds[agent_id]
 
+            _flip_executing_to_idle(agent_id, "PostCompact")
             await ad.dispatch_pending_message(agent_id, delay=0)
         asyncio.ensure_future(_post_compact_finalize())
 
@@ -920,6 +1069,18 @@ async def hook_agent_tool_activity(request: Request):
                     "SubagentStop hook: unknown subagent %s for parent %s (known: %s)",
                     sub_agent_id[:12], agent_id[:8], list(known.keys()),
                 )
+                # The compaction's own summary fork never sends SubagentStart
+                # and returns a <summary> block (CC extracts it the same way);
+                # other unknown stops (e.g. ~30s agent_summary forks of a
+                # background agent) don't. An applied compaction sends
+                # PostCompact within ~3s of the fork; a summary precompute
+                # never does — release the hold if nothing follows.
+                _hold = _idle_compact_holds.get(agent_id)
+                if _hold is not None and "<summary>" in (last_msg or ""):
+                    asyncio.ensure_future(_idle_compact_watchdog(
+                        ad, agent_id, _hold, _IDLE_COMPACT_FORK_GRACE_S,
+                        "compaction fork finished, no PostCompact",
+                    ))
             if info:
                 sub_db_id = info["agent_id"]
                 _db = _SL()
@@ -972,26 +1133,34 @@ async def hook_agent_tool_activity(request: Request):
         # Note: `body["trigger"]` ("manual"|"auto") is also present in the
         # PostCompact payload, so the IDLE-vs-EXECUTING decision is made
         # there directly — no need to stash the trigger here.
-        logger.info(
-            "PreCompact: trigger=%s for %s",
-            body.get("trigger") or "manual", agent_id[:8],
-        )
+        _pc_trigger = body.get("trigger") or "manual"
+        logger.info("PreCompact: trigger=%s for %s", _pc_trigger, agent_id[:8])
 
         # Mark agent EXECUTING for the entire compact window. Compact runs
-        # for 30s-2min; during that span dispatch_pending_message must NOT
+        # for 30s-2.5min; during that span dispatch_pending_message must NOT
         # fire (the pane is in a non-input state — paste/Enter would land
-        # somewhere wrong). PostCompact's sync_full_scan flips status back
-        # per trigger: manual → IDLE (the /compact turn is over), auto →
-        # keep EXECUTING (the user's original task continues).
+        # somewhere wrong). PostCompact flips status back: manual → IDLE
+        # (the /compact turn is over); auto mid-turn → keep EXECUTING (the
+        # user's original task continues); auto between turns → IDLE (CC
+        # idle compaction — no Stop will follow, see _idle_compact_holds).
         # Doing this for both triggers is symmetric and defensive: even if
         # CC's `trigger` field is unreliable or future modal-confirmation
         # paths don't fit the manual/auto dichotomy, dispatch is still
         # blocked until PostCompact resolves.
+        _between_turns = False
+        _since_turn_hook = time.monotonic() - _last_turn_hook_at.get(agent_id, float("-inf"))
         _db_status = SessionLocal()
         try:
             _ag = _db_status.get(Agent, agent_id)
             if _ag and _ag.status not in (AgentStatus.STOPPED, AgentStatus.ERROR):
                 if _ag.status != AgentStatus.EXECUTING:
+                    _between_turns = _since_turn_hook >= _TURN_HOOK_QUIET_S
+                    if not _between_turns:
+                        logger.info(
+                            "PreCompact: %s reads %s but a turn hook fired %.1fs "
+                            "ago — treating as in-turn compaction",
+                            agent_id[:8], _ag.status.value, _since_turn_hook,
+                        )
                     _ag.status = AgentStatus.EXECUTING
                     _db_status.commit()
                     from websocket import emit_agent_update as _eau
@@ -1000,11 +1169,17 @@ async def hook_agent_tool_activity(request: Request):
                         "PreCompact: agent %s → EXECUTING for compact window",
                         agent_id[:8],
                     )
+                elif agent_id in _idle_compact_holds:
+                    # Still EXECUTING from an earlier between-turns hold
+                    # (e.g. a summary precompute) — renew it.
+                    _between_turns = True
         except Exception:
             _db_status.rollback()
             logger.exception("PreCompact: failed to set EXECUTING for %s", agent_id[:8])
         finally:
             _db_status.close()
+        if _between_turns and ad:
+            _take_idle_compact_hold(ad, agent_id)
         # Drain the old session's pending JSONL turns into the DB before
         # compact rewrites the file.  Without this, any turn produced in
         # the hook-silent window since the last sync (e.g. final assistant
@@ -1014,8 +1189,12 @@ async def hook_agent_tool_activity(request: Request):
         #
         # No `wait_for` marker: generic drain — we want to flush whatever
         # is pending before the file gets rewritten, not a specific entry.
+        # Between-turns auto compaction has nothing in flight (the last
+        # turn's Stop was already synced), so the flush wait would only
+        # stall CC's compaction for its full 10s timeout.
         if ad and ad._sync_contexts.get(agent_id):
-            await _await_jsonl_flush(ad, agent_id)
+            if not (_between_turns and _pc_trigger == "auto"):
+                await _await_jsonl_flush(ad, agent_id)
             await ad._drain_session_sync(agent_id)
             # Now pause sync — JSONL is about to be rewritten
             import time as _time
