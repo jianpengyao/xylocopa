@@ -105,12 +105,13 @@ prefetchHeavyChunks();
     beacon({ action: "reload-trace", reason: "beforeunload" });
   });
   if ("serviceWorker" in navigator) {
-    // New SW activation is traced but does NOT force a page reload. With
-    // clientsClaim the fresh SW controls the page immediately, so updated
-    // assets are served on the next navigation. Forcing location.reload()
-    // on every controllerchange reloaded every open tab on every rebuild;
-    // genuinely stale in-memory chunk refs are caught by the chunk-recovery
-    // net in index.html (capture-phase asset 404 + dynamic-import failure).
+    // New SW activation is only traced here; this listener does NOT force
+    // a page reload (it used to, on every controllerchange). Note that
+    // registerSW below (registerType 'autoUpdate') still reloads open pages
+    // once an updated SW activates — see vite-plugin-pwa
+    // client/build/register.js and the swState gate in App.jsx. Stale
+    // in-memory chunk refs are caught by the chunk-recovery net in
+    // index.html (capture-phase asset 404 + dynamic-import failure).
     let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       beacon({ action: "reload-trace", reason: "sw-controllerchange", hadController });

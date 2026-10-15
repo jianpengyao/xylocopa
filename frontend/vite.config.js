@@ -66,6 +66,81 @@ export default defineConfig({
         };
       },
     },
+    // index.html headers + a small access log for the prod (preview) server.
+    // Must stay after 'asset-404' so a missing chunk still gets its 404.
+    //  - index.html: Cache-Control no-store and no ETag. Vite serves it
+    //    no-cache with a weak ETag and answers 304 to a matching
+    //    If-None-Match — a truncated copy WebKit cached (bug 312248) would
+    //    be revalidated as "fresh" until website data is cleared. It is
+    //    ~11 KB; not caching it costs nothing.
+    //  - while dist/ is being rebuilt in place (the post-commit hook runs
+    //    `vite build` under the live server) index.html is briefly missing
+    //    and Vite answered an empty 404 — a blank page with no way out in a
+    //    standalone PWA. Answer 503 with a page that reloads itself instead.
+    //  - access log for page loads (incl. those the SW re-fetches, which
+    //    arrive as Sec-Fetch-Dest: empty), sw.js and the recovery probes,
+    //    with the client address: behind the proxy the backend only sees
+    //    127.0.0.1, so "did the phone reach the server at all?" had no
+    //    answer in the logs.
+    {
+      name: 'preview-index-html',
+      configurePreviewServer(server) {
+        const distDir = path.resolve(server.config.root, server.config.build.outDir)
+        const REBUILDING_HTML = '<!doctype html><meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+          '<title>Xylocopa</title><style>:root{color-scheme:light dark}' +
+          'body{font:15px -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;margin-top:40vh}</style>' +
+          '<p>Updating\u2026 reloading in a moment.</p>' +
+          '<script>setTimeout(function(){location.reload()},2000)</script>'
+        const serveIndex = (req, res) => {
+          fs.readFile(path.join(distDir, 'index.html'), (err, body) => {
+            if (err) {
+              res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '2' })
+              res.end(req.method === 'HEAD' ? undefined : REBUILDING_HTML)
+              return
+            }
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+            res.end(req.method === 'HEAD' ? undefined : body)
+          })
+        }
+        const pathOf = (req) => (req.url || '').split('?')[0]
+        const isIndexRequest = (req) =>
+          pathOf(req) === '/index.html' && (req.method === 'GET' || req.method === 'HEAD')
+        const shouldLog = (req, url) =>
+          (req.headers.accept || '').startsWith('text/html') || url === '/sw.js' ||
+          /[?&](src=offline|_xs=)/.test(req.url || '')
+        server.middlewares.use((req, res, next) => {
+          if (shouldLog(req, pathOf(req))) {
+            const t0 = Date.now()
+            // Read now: over HTTP/2 the socket proxy is gone by 'finish'.
+            const ip = (req.socket?.remoteAddress || '?').replace(/^::ffff:/, '')
+            const url = req.originalUrl || req.url
+            let logged = false
+            // 'close' too: an aborted request (the probes' 8s abort) never
+            // emits 'finish'.
+            const log = () => {
+              if (logged) return
+              logged = true
+              const status = res.writableEnded ? res.statusCode : `${res.statusCode}-aborted`
+              const ua = (req.headers['user-agent'] || '').slice(0, 120)
+              console.log(`[access] ${new Date().toISOString()} ${ip} ${req.method} ${url} ${status} ${Date.now() - t0}ms "${ua}"`)
+            }
+            res.on('finish', log)
+            res.on('close', log)
+          }
+          if (isIndexRequest(req)) return serveIndex(req, res)
+          next()
+        })
+        // After Vite's SPA fallback has rewritten "/" and app routes to
+        // /index.html, before its own index.html middleware.
+        return () => {
+          server.middlewares.use((req, res, next) => {
+            if (isIndexRequest(req)) return serveIndex(req, res)
+            next()
+          })
+        }
+      },
+    },
     react(),
     tailwindcss(),
     VitePWA({
@@ -73,23 +148,25 @@ export default defineConfig({
       // intervention. Combined with skipWaiting + no NavigationRoute below,
       // tabs see fresh HTML on next navigation without the "zombie SW
       // serving stale cached index.html" failure mode that made cert-regen
-      // recovery require website-data clearing.
+      // recovery require website-data clearing. Note: in this mode the
+      // plugin's register code reloads open pages once an updated SW
+      // activates (vite-plugin-pwa client/build/register.js); the swState
+      // gate in App.jsx exists for that reload.
       //
-      // The SW never handles navigations or /api requests at all (no route
-      // matches them, so respondWith is never called and the browser's own
-      // network stack serves them). See sw-runtime-caching.js for why: a
-      // NetworkOnly route turned every transient fetch failure inside the
-      // SW into an unrecoverable "FetchEvent.respondWith received an error"
-      // page on iOS.
+      // No Workbox route matches navigations or /api requests (see
+      // sw-runtime-caching.js for why: a NetworkOnly route turned every
+      // transient fetch failure inside the SW into an unrecoverable
+      // "FetchEvent.respondWith received an error" page on iOS).
+      // Navigations are passed through by public/sw-navigation.js, which
+      // answers with its offline page when the network fetch fails.
       registerType: 'autoUpdate',
       devOptions: { enabled: true },
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
-        // No 'html' here — index.html is NOT precached. Navigation requests
-        // are not intercepted by the SW at all, so a network or TLS failure
-        // surfaces as the browser's own (recoverable) error page instead of
-        // a silent SW-served stale shell or a SW error page.
+        // No 'html' here — index.html is NOT precached. Navigations always
+        // go to the network (sw-navigation.js), never to a stale cached
+        // shell; on failure the SW serves its inline offline page.
         globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
         // Imported into the generated SW, in this order, before Workbox
         // registers its own fetch listener:
