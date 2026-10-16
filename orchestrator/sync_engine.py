@@ -478,8 +478,16 @@ def _detect_interactive_mismatches(db, ctx: "SyncContext", turns) -> None:
             )
 
 
-def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jsonl_ts=None):
-    """UUID dedup, then create SYSTEM message. Returns Message or None."""
+def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jsonl_ts=None,
+                       legacy_uuid=None, converted: list | None = None):
+    """UUID dedup, then create SYSTEM message. Returns Message or None.
+
+    ``legacy_uuid`` is a compact summary's JSONL entry uuid. A parser that
+    missed the summary (e.g. CC put a preamble before its opening line)
+    imported it as a USER row under that uuid; dedup converts such a row to
+    this SYSTEM turn in place — same id and display slot — and appends its id
+    to ``converted`` so the caller writes the display _replace after commit.
+    """
     if jsonl_uuid:
         existing = db.query(Message.id).filter(
             Message.agent_id == ctx.agent_id,
@@ -487,6 +495,25 @@ def _create_system_msg(db, ctx: SyncContext, content, jsonl_uuid, seq, kind, jso
         ).first()
         if existing:
             logger.debug("Agent %s: dedup skip uuid=%s", ctx.agent_id[:8], jsonl_uuid)
+            return None
+
+    if legacy_uuid:
+        legacy = db.query(Message).filter(
+            Message.agent_id == ctx.agent_id,
+            Message.jsonl_uuid == legacy_uuid,
+            Message.role == MessageRole.USER,
+        ).first()
+        if legacy:
+            legacy.role = MessageRole.SYSTEM
+            legacy.content = content
+            legacy.jsonl_uuid = jsonl_uuid
+            legacy.kind = kind
+            legacy.session_seq = seq
+            if converted is not None:
+                converted.append(legacy.id)
+            logger.info("Agent %s: compact summary imported as USER msg %s — "
+                        "converted to SYSTEM (uuid %s → %s)",
+                        ctx.agent_id[:8], legacy.id, legacy_uuid, jsonl_uuid)
             return None
 
     logger.debug("Agent %s: creating message role=system kind=%s uuid=%s seq=%d",
@@ -752,6 +779,8 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
             elif role == "system":
                 msg = _create_system_msg(
                     db, ctx, content, jsonl_uuid, seq, kind, jsonl_ts,
+                    legacy_uuid=meta.get("entry_uuid") if isinstance(meta, dict) else None,
+                    converted=_deferred_updates,
                 )
                 if msg is None:
                     _drift_skipped_dedup.append((seq, role, kind, jsonl_uuid))

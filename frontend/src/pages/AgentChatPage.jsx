@@ -3061,7 +3061,12 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         setSentMessages((prev) => {
           const seenIds = new Set(prev.map((m) => m.id));
           const unique = older.filter((m) => !seenIds.has(m.id));
-          return unique.length ? [...unique, ...prev] : prev;
+          // Keep seq order, not just prepend: a _replace line for an old
+          // message (update_last) sits in the tail window, so the first
+          // page already holds it and it must slot back among older ones.
+          return unique.length
+            ? [...unique, ...prev].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+            : prev;
         });
       }
       setHasMore(moreFlag);

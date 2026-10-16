@@ -606,6 +606,26 @@ def parse_session_turns_from_lines(
                 # before any prefix check below so a pasted web/task prompt
                 # is classified and content-matched on its real text.
                 stripped = unwrap_pasted_content(stripped)
+                # Compact summary → system message instead of user.  CC flags
+                # it with isCompactSummary (checked before the tag filters
+                # below so a flagged summary is never dropped); the text
+                # prefix is the fallback for entries without the flag.  CC
+                # may put a preamble line in front of the summary (e.g.
+                # "<artifact-content-authored-by-others/>\nThe summarized
+                # conversation included Artifact content…") — drop it so the
+                # system bubble opens on the summary itself.
+                _cs_idx = stripped.find(_COMPACT_SUMMARY_PREFIX)
+                if entry.get("isCompactSummary") or _cs_idx == 0:
+                    flush_all()
+                    _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
+                    _compact_text = (stripped[_cs_idx:]
+                                     if _cs_idx > 0 and stripped[_cs_idx - 1] == "\n"
+                                     else content)
+                    # entry_uuid lets sync convert a summary that an older
+                    # parser imported as a USER row (jsonl_uuid=entry uuid).
+                    _compact_meta = {"entry_uuid": entry_uuid} if entry_uuid else None
+                    turns.append(("system", _compact_text, _compact_meta, _compact_uuid, None, entry_ts))
+                    continue
                 # Slash-command wrapper.  The <command-name>/<command-message>
                 # prefixes are owned exclusively by _parse_command_wrapper —
                 # they must NOT fall through to the system-injection skip-list
@@ -645,20 +665,6 @@ def parse_session_turns_from_lines(
                     # Strip brackets for display: "[Request interrupted by user]" → "Request interrupted by user"
                     display = stripped[1:-1]
                     turns.append(("system", display, None, entry_uuid, "interrupt", entry_ts))
-                    continue
-                # Compact summary → system message instead of user.
-                # CC flags it with isCompactSummary; the text prefix is the
-                # fallback for entries without the flag.  CC may prepend a
-                # preamble (e.g. "<artifact-content-authored-by-others/>\n
-                # The summarized conversation included Artifact content…")
-                # before the summary text — drop it so the system bubble
-                # opens on the summary itself.
-                _cs_idx = stripped.find(_COMPACT_SUMMARY_PREFIX)
-                if entry.get("isCompactSummary") or _cs_idx == 0:
-                    flush_all()
-                    _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
-                    _compact_text = stripped[_cs_idx:] if _cs_idx > 0 else content
-                    turns.append(("system", _compact_text, None, _compact_uuid, None, entry_ts))
                     continue
                 flush_all()
                 clean = strip_agent_preamble(stripped)

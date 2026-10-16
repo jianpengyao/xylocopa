@@ -82,6 +82,31 @@ def test_flagged_summary_with_unknown_wording_is_system():
     assert uuid == _sys_uuid(raw)
 
 
+def test_flagged_summary_carries_entry_uuid_for_legacy_dedup():
+    _role, _content, meta, _uuid, _kind, _ts = _only_turn([
+        _user_line(ARTIFACT_PREAMBLE + SUMMARY, uuid="e-42", isCompactSummary=True),
+    ])
+    assert meta == {"entry_uuid": "e-42"}
+
+
+def test_flagged_summary_quoting_phrase_mid_line_not_sliced():
+    raw = "Summary of earlier work:\nUser asked why '" + PREFIX + "' leaked."
+    role, content, _meta, _uuid, _kind, _ts = _only_turn([
+        _user_line(raw, isCompactSummary=True),
+    ])
+    assert role == "system"
+    assert content == raw
+
+
+def test_flagged_summary_starting_with_filtered_tag_not_dropped():
+    raw = "<system-reminder>note</system-reminder>\n" + SUMMARY
+    role, content, _meta, _uuid, _kind, _ts = _only_turn([
+        _user_line(raw, isCompactSummary=True),
+    ])
+    assert role == "system"
+    assert content == SUMMARY
+
+
 def test_user_message_quoting_summary_text_stays_user():
     text = "Why does my bubble say '" + PREFIX + "'?"
     role, content, _meta, uuid, _kind, _ts = _only_turn([_user_line(text, uuid="u-7")])
