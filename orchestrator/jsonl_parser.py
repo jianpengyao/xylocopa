@@ -40,6 +40,9 @@ AGENTHIVE_PROMPT_MARKER = "<!-- agenthive-prompt"  # legacy — still parsed for
 # Preamble prefix used to detect system-wrapped prompts in JSONL content.
 PREAMBLE_PREFIX = "You are working in project:"
 
+# Opening line of the summary CC injects after a compaction.
+_COMPACT_SUMMARY_PREFIX = "This session is being continued from a previous conversation"
+
 _IMAGE_META_RE = re.compile(
     r"^\[Image: original \d+x\d+, displayed at \d+x\d+\."
 )
@@ -643,13 +646,19 @@ def parse_session_turns_from_lines(
                     display = stripped[1:-1]
                     turns.append(("system", display, None, entry_uuid, "interrupt", entry_ts))
                     continue
-                # Compact summary → system message instead of user
-                if stripped.startswith(
-                    "This session is being continued from a previous conversation"
-                ):
+                # Compact summary → system message instead of user.
+                # CC flags it with isCompactSummary; the text prefix is the
+                # fallback for entries without the flag.  CC may prepend a
+                # preamble (e.g. "<artifact-content-authored-by-others/>\n
+                # The summarized conversation included Artifact content…")
+                # before the summary text — drop it so the system bubble
+                # opens on the summary itself.
+                _cs_idx = stripped.find(_COMPACT_SUMMARY_PREFIX)
+                if entry.get("isCompactSummary") or _cs_idx == 0:
                     flush_all()
                     _compact_uuid = f"sys-{hashlib.md5(content.encode()).hexdigest()[:16]}"
-                    turns.append(("system", content, None, _compact_uuid, None, entry_ts))
+                    _compact_text = stripped[_cs_idx:] if _cs_idx > 0 else content
+                    turns.append(("system", _compact_text, None, _compact_uuid, None, entry_ts))
                     continue
                 flush_all()
                 clean = strip_agent_preamble(stripped)
