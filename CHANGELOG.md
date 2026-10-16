@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-15
+
+Reliability release for the home-screen (PWA) app on iOS and for idle agents. After a network drop the iOS app could stay on Safari's "FetchEvent.respondWith received an error" page, or later on a "Reconnecting…" page whose buttons had no effect, until website data was cleared. Navigations and API calls no longer go through Workbox. The service worker serves an offline page that retries on its own and has working buttons. The recovery paths no longer remove the service worker while the server is unreachable. Separately, agents left idle no longer stay in EXECUTING after Claude Code's background compaction. Also: the frontend honours `DISABLE_AUTH`, and Safari password AutoFill no longer appears on ordinary inputs.
+
+### Fixed
+
+- **Agents stuck in EXECUTING after idle compaction.** Claude Code 2.1.300 compacts a session in the background about 54 min after its last turn. It sends PreCompact/PostCompact with `trigger="auto"`, the same as a mid-turn context-fill compaction, but no Stop follows. PreCompact set the agent to EXECUTING and it stayed there, with queued messages undelivered, until Escape.
+  - PreCompact now takes a hold when the agent is IDLE with no UserPromptSubmit/Stop in the last 60 s.
+  - PostCompact releases the hold: the agent goes back to IDLE and queued messages are dispatched. A 30 s grace after the compaction fork's SubagentStop, or a 600 s watchdog, also releases it.
+  - After an orchestrator restart, PostCompact(auto) falls back to the JSONL: a turn-end entry before the last `compact_boundary` means the compaction ran between turns.
+  - Between-turns auto PreCompact skips the 10 s JSONL flush wait. (834e4ac7)
+- **iOS app stuck on "FetchEvent.respondWith received an error".** Workbox's NetworkOnly routes rejected `respondWith` when `fetch()` threw. iOS then showed its service-worker failure page, which has no retry in a standalone app, and every relaunch hit the same route until website data was cleared. Navigations, `/api/*` and the catch-all route are no longer handled by Workbox. Precache and the image CacheFirst routes are unchanged. A unit test checks that no route matches navigations, `/api/*`, `/sw.js` or `/ws/*`. (d5e0ef45)
+- **Offline page for navigations.** `public/sw-navigation.js` runs ahead of Workbox. It passes top-level navigations through to the network with a 15 s cap, after which the fetch is aborted. On any failure it answers with an inline "Reconnecting…" page instead of rejecting.
+  - The page probes `/api/health` with backoff, and immediately on foreground and `online`. It reloads into the app when the server answers.
+  - Retry aborts a probe in flight and starts a new one.
+  - Failures show their cause: no response in 8 s, or connection failed.
+  - After 15 s a hint says the device cannot reach the server and suggests toggling Tailscale/VPN.
+  - Reset is refused while the server is unreachable.
+  - A 20 s watchdog cancels a reload that never replaced the page.
+  - Probe results are kept in `localStorage` `xy-offline-diag` and sent to `/api/debug/auth-diag` (`action=offline-page`) once the app mounts. (b4492e95, 75ed86de, 291f56a7)
+- **Recovery paths removing the service worker during an outage.**
+  - The `unhandledrejection` handler in `index.html` matched Safari's generic "Load failed", so one failed request during a network blip unregistered the service worker and reloaded the page. It now matches only module-import/MIME failures and is skipped while the browser reports offline.
+  - `recover()` and `lazyPage`'s last resort first request `/manifest.webmanifest?_xs=<ts>`. They clear the service worker and caches only if the server answers. Otherwise they do a plain reload when a service worker controls the page, or wait for the server when none does.
+  - `recover()` is throttled by timestamp.
+  - A failed idle-time prefetch no longer triggers a reload. (a535bac0, 291f56a7, a399b05e)
+- **"Unable to reach server" screen with no exit.**
+  - AuthGuard's server-down probe used to give up after 60 s. It now backs off from 2 s to 10 s indefinitely, probes on foreground and `online`, and Retry runs a probe instead of reloading.
+  - The auth check runs once per boot. It used to re-run on every in-app navigation, and one transient failure unmounted the app.
+  - The service-worker update gate is one-way and is released when the pending worker activates. (a399b05e)
+- **Half-open WebSocket.** The status socket reconnected only from `onclose`.
+  - It now pings every 30 s and drops the socket if no frame arrives within 10 s.
+  - A handshake still CONNECTING after 10 s is abandoned.
+  - On `visibilitychange`, `online` and `pageshow` it resets the backoff, then probes the open socket or reconnects.
+  - The backoff is capped at 30 s and never gives up. (8a8effb7)
+- **Push fallback registration race.** Push setup waits up to 5 s for the app's service worker before registering `push-handler.js` as a fallback at the same scope. (a535bac0)
+- **Idle lock with `DISABLE_AUTH`.** With auth disabled on the server, the frontend's 30-minute idle lock still navigated to `/login`, which bounced to `/`, so the current page was lost after every half hour idle.
+  - `/api/auth/check` reports `auth_disabled`. Older backends are detected with a token-less check.
+  - The idle lock is off in that mode. The result is remembered in `localStorage` `xy:auth-disabled`, so cold starts also skip the bounce.
+  - The CLAUDE.md-pending poll no longer requires a stored token. (dcd2c0b2, a3c35bef)
+- **Safari password AutoFill on non-login inputs.**
+  - Search boxes use `type="search"` with `autocomplete="off"`, with WebKit's native search styling removed.
+  - The new-project and new-task forms and the task title inputs get `autocomplete="off"` and non-credential field names.
+  - The git URL placeholder no longer contains "user". (e6f58fb9)
+
+### Changed
+
+- **Preview server.**
+  - `index.html` is served `no-store` with no ETag. Before, it was `no-cache` with a weak ETag and 304 revalidation.
+  - While `dist/` is rebuilt in place, requests get a 503 page that reloads after 2 s. Before, they got an empty 404.
+  - `[access]` log lines record the client address for page loads, `sw.js` and the recovery probes. (e63ccd0b)
+
 ## [0.17.1] - 2026-09-23
 
 Maintenance release for Claude Code 2.1.28x and mobile performance. Claude Code started wrapping every pasted prompt in `<pasted_content>` tags, which made every web-sent message appear twice; the parser now unwraps them and a repair tool cleans up existing history. The chat page on phones was measured under iPhone emulation and its idle cost was cut substantially (network 5.6 MB/min to 118 KB/min, script time to about a third). Also: Opus 5.5 as the default model, and launched sessions no longer have their `opus` alias pinned to Opus 4.6.
