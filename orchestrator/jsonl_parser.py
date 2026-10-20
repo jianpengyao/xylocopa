@@ -736,6 +736,24 @@ def parse_session_turns_from_lines(
                             tool_meta = {"tool_name": tool_name, "tool_use_id": tool_use_id}
                             if tool_name == "Skill":
                                 tool_meta.update(skill_turn_metadata(tool_input))
+                            elif isinstance(tool_input, dict):
+                                # Full paths for the project Assets index — the
+                                # summary truncates non-media paths and drops
+                                # NotebookEdit / SendUserFile paths entirely.
+                                if tool_name in ("Read", "Edit", "Write", "MultiEdit"):
+                                    _fp = tool_input.get("file_path")
+                                elif tool_name == "NotebookEdit":
+                                    _fp = tool_input.get("notebook_path")
+                                else:
+                                    _fp = None
+                                if isinstance(_fp, str) and _fp:
+                                    tool_meta["file_path"] = _fp
+                                if tool_name == "SendUserFile":
+                                    _files = tool_input.get("files")
+                                    if isinstance(_files, list):
+                                        _files = [f for f in _files if isinstance(f, str) and f]
+                                        if _files:
+                                            tool_meta["files"] = _files
                             turns.append(("assistant", summary, tool_meta, tool_uuid, "tool_use", entry_ts))
 
         elif entry_type == "system":
