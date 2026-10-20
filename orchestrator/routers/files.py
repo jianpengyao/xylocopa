@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -25,6 +26,11 @@ _THUMB_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _THUMB_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 _MP4_COMPAT_LOCKS: dict[str, asyncio.Lock] = {}
 _VIDEO_THUMB_LOCKS: dict[str, asyncio.Lock] = {}
+_IMAGE_THUMB_LOCKS: dict[str, asyncio.Lock] = {}
+# Thumbnail max edge: default 1200 (chat/lightbox), 320 for grid tiles
+# (Assets view). Any other ?w= falls back to the default.
+_THUMB_DEFAULT_W = 1200
+_THUMB_SIZES = {320}
 
 
 def _mp4_has_faststart(path: str) -> bool:
@@ -166,12 +172,12 @@ async def _ensure_ios_compat_mp4(full_path: str) -> str:
             return full_path
 
 
-async def _extract_video_thumb(src: str, dest: str) -> str | None:
+async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_W) -> str | None:
     """Extract a poster frame from a video file via ffmpeg, cache as JPEG.
     Returns the cache path on success, None on failure."""
     if not shutil.which("ffmpeg"):
         return None
-    lock = _VIDEO_THUMB_LOCKS.setdefault(src, asyncio.Lock())
+    lock = _VIDEO_THUMB_LOCKS.setdefault(dest, asyncio.Lock())
     async with lock:
         try:
             if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
@@ -181,12 +187,12 @@ async def _extract_video_thumb(src: str, dest: str) -> str | None:
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             tmp = dest + ".tmp"
-            # -ss 0.5 picks an early non-black frame; scale caps at 1200px wide.
+            # -ss 0.5 picks an early non-black frame; scale caps the width.
             # -f image2 forces JPEG container since the .tmp suffix on the
             # output path defeats ffmpeg's extension-based format detection.
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5",
                    "-i", src, "-frames:v", "1",
-                   "-vf", "scale='min(1200,iw)':-2",
+                   "-vf", f"scale='min({int(width)},iw)':-2",
                    "-q:v", "4", "-f", "image2", tmp]
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -381,11 +387,54 @@ async def serve_project_file(project: str, path: str, request: Request,
     return _serve_file_with_range(full_path, media_type, request)
 
 
+def _render_image_thumb(src: str, dest: str, width: int) -> None:
+    """Pillow resize → JPEG q80 (EXIF-rotated), written via tmp + replace so
+    a concurrent reader never sees a partial file. Runs in a worker thread."""
+    from PIL import Image, ImageOps
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = f"{dest}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with Image.open(src) as img:
+            img = ImageOps.exif_transpose(img)
+            img.thumbnail((width, width))
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            img.save(tmp, "JPEG", quality=80)
+        os.replace(tmp, dest)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+async def _image_thumb(src: str, dest: str, width: int) -> str | None:
+    lock = _IMAGE_THUMB_LOCKS.setdefault(dest, asyncio.Lock())
+    async with lock:
+        try:
+            if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+                return dest
+        except OSError:
+            pass
+        try:
+            await asyncio.to_thread(_render_image_thumb, src, dest, width)
+            return dest
+        except Exception as e:  # noqa: BLE001 — incl. PIL DecompressionBombError; serve original
+            logger.debug("Thumbnail generation failed for %s: %s", src, e)
+            return None
+
+
 @router.get("/api/thumbs/{project}/{path:path}")
-async def serve_thumbnail(project: str, path: str, request: Request, db: Session = Depends(get_db)):
-    """Serve a resized thumbnail (max 1200px, JPEG q80) with filesystem caching."""
+async def serve_thumbnail(project: str, path: str, request: Request, w: str | None = None,
+                          db: Session = Depends(get_db)):
+    """Serve a resized thumbnail (JPEG q80) with filesystem caching.
+
+    Max edge 1200px by default; ``?w=320`` gives the grid-tile size (cached
+    separately). Unsupported types are served as the original file.
+    """
     import mimetypes
     full_path = _resolve_project_file(project, path, db)
+    width = next((n for n in _THUMB_SIZES if w == str(n)), _THUMB_DEFAULT_W)
 
     _, ext = os.path.splitext(full_path)
     ext = ext.lower()
@@ -396,32 +445,25 @@ async def serve_thumbnail(project: str, path: str, request: Request, db: Session
         return _serve_file_with_range(full_path, media_type, request)
 
     # Cache path: .thumbcache/<filename>.thumb.jpg next to the original
+    # (<filename>.w320.thumb.jpg for the grid size)
     cache_dir = os.path.join(os.path.dirname(full_path), ".thumbcache")
-    thumb_file = os.path.join(cache_dir, os.path.basename(full_path) + ".thumb.jpg")
-
-    if os.path.isfile(thumb_file) and os.path.getmtime(thumb_file) >= os.path.getmtime(full_path):
-        return FileResponse(thumb_file, media_type="image/jpeg")
-
-    if is_video:
-        thumb = await _extract_video_thumb(full_path, thumb_file)
-        if thumb:
-            return FileResponse(thumb, media_type="image/jpeg")
-        media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
-        return _serve_file_with_range(full_path, media_type, request)
+    suffix = ".thumb.jpg" if width == _THUMB_DEFAULT_W else f".w{width}.thumb.jpg"
+    thumb_file = os.path.join(cache_dir, os.path.basename(full_path) + suffix)
 
     try:
-        from PIL import Image
-        os.makedirs(cache_dir, exist_ok=True)
-        with Image.open(full_path) as img:
-            img.thumbnail((1200, 1200))
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            img.save(thumb_file, "JPEG", quality=80)
-        return FileResponse(thumb_file, media_type="image/jpeg")
-    except (ImportError, IOError, OSError, ValueError) as e:
-        logger.debug("Thumbnail generation failed for %s: %s", full_path, e)
-        media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
-        return _serve_file_with_range(full_path, media_type, request)
+        if os.path.isfile(thumb_file) and os.path.getmtime(thumb_file) >= os.path.getmtime(full_path):
+            return FileResponse(thumb_file, media_type="image/jpeg")
+    except OSError:
+        pass
+
+    if is_video:
+        thumb = await _extract_video_thumb(full_path, thumb_file, width)
+    else:
+        thumb = await _image_thumb(full_path, thumb_file, width)
+    if thumb:
+        return FileResponse(thumb, media_type="image/jpeg")
+    media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+    return _serve_file_with_range(full_path, media_type, request)
 
 
 @router.post("/api/upload")
