@@ -12,7 +12,7 @@ export default function ProjectDetailSkeleton() {
       </div>
       {/* Filter tabs */}
       <div className="shrink-0 px-4 py-2 flex items-center gap-2">
-        {[60, 70, 80, 70, 70].map((w, i) => (
+        {[60, 70, 80, 70, 70, 70].map((w, i) => (
           <div key={i} className="h-9 rounded-full bg-input animate-pulse" style={{ width: w }} />
         ))}
       </div>

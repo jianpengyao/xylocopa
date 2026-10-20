@@ -269,6 +269,19 @@ export const deleteBookmark = (project, messageId) =>
   request(`/api/projects/${e(project)}/messages/${e(messageId)}/bookmark`, {
     method: "DELETE",
   });
+export const fetchProjectAssets = (project, { includeMissing = false } = {}) =>
+  request(`/api/projects/${e(project)}/assets?include_missing=${includeMissing ? 1 : 0}`);
+// starred / hidden / note: null or omitted = unchanged; note "" clears.
+export const updateAssetMarks = (project, { paths, starred, hidden, note }) => {
+  const body = { paths };
+  if (starred != null) body.starred = starred;
+  if (hidden != null) body.hidden = hidden;
+  if (note != null) body.note = note;
+  return request(`/api/projects/${e(project)}/assets/marks`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+};
 export const filesExistsBatch = (items) =>
   request(`/api/files/exists-batch`, { method: "POST", body: JSON.stringify({ items }) });
 export const mintPreviewToken = (project) =>

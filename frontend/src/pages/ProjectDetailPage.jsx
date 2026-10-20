@@ -45,6 +45,7 @@ import ProjectBrowserModal from "../components/ProjectBrowserModal";
 import ClaudeMdDiffModal from "../components/ClaudeMdDiffModal";
 import BookmarksSection from "../components/BookmarksSection";
 import TaskGraphSection from "../components/TaskGraphSection";
+import AssetsSection from "../components/assets/AssetsSection";
 import usePageVisible from "../hooks/usePageVisible";
 import { useToast } from "../contexts/ToastContext";
 import { forwardState } from "../lib/nav";
@@ -57,6 +58,7 @@ const AGENT_TABS = [
   { key: "insights", label: "Insights" },
   { key: "stopped", label: "Stopped" },
   { key: "graph", label: "Graph" },
+  { key: "assets", label: "Assets" },
 ];
 
 function TaskRing({ total, completed, pct: pctOverride, size = 22 }) {
@@ -824,10 +826,12 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
     });
   }, [name]);
 
-  // Debounced search: messages (server, project-scoped) + files (server)
+  // Debounced search: messages (server, project-scoped) + files (server).
+  // The Assets tab hides the search bar (it has its own filter), so skip.
+  const isAssetsTab = agentTab === "assets";
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    const q = search.trim();
+    const q = isAssetsTab ? "" : search.trim();
     if (q.length < 2) {
       setMessageResults(null);
       setFileResults(null);
@@ -848,7 +852,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         .finally(() => setFileSearchLoading(false));
     }, 300);
     return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
-  }, [search, name]);
+  }, [search, name, isAssetsTab]);
 
   // Client-side agent filter — by name / id / preview, applied on top of tab filter
   const tabFiltered = useMemo(() => (
@@ -1166,7 +1170,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="pb-24 p-4 max-w-2xl mx-auto w-full space-y-5">
 
-      {/* Search bar */}
+      {/* Search bar (hidden on Assets tab — it has its own filter) */}
+      {!isAssetsTab && (
       <div className="relative">
         <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-faint pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
           <circle cx="11" cy="11" r="8" />
@@ -1192,9 +1197,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           </button>
         )}
       </div>
+      )}
 
       {/* Search results: messages + files */}
-      {search.trim().length >= 2 && (
+      {!isAssetsTab && search.trim().length >= 2 && (
         <div className="space-y-3">
           {/* Messages */}
           {messageSearchLoading && (
@@ -1340,8 +1346,8 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         </div>
       )}
 
-      {/* Agent list (hidden on Graph tab) */}
-      {agentTab !== "graph" && (
+      {/* Agent list (hidden on Graph / Assets tabs) */}
+      {agentTab !== "graph" && !isAssetsTab && (
         <div>
           {(loading || !agentsSeeded) && agents.length === 0 ? (
             // Header was seeded from briefCache; agent list still loading.
@@ -1396,6 +1402,10 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
       {/* Task graph view */}
       <TaskGraphSection projectName={name} visible={agentTab === "graph"} />
 
+      {/* Assets view — replaces bookmarks + settings below while active */}
+      <AssetsSection projectName={name} visible={isAssetsTab} />
+
+      {!isAssetsTab && (<>
       <BookmarksSection
         projectName={name}
         items={bookmarks}
@@ -1515,6 +1525,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
           </button>
         </div>
       </div>
+      </>)}
 
       {/* Rename confirmation modal */}
       {showRenameConfirm && (
@@ -1689,7 +1700,7 @@ export default function ProjectDetailPage({ theme, onToggleTheme }) {
         />
       )}
 
-      {selecting && selected.size > 0 && (
+      {selecting && selected.size > 0 && !isAssetsTab && (
         <div className="fixed bottom-20 left-0 right-0 z-20 px-4 pb-2 animate-bar-slide-up">
           <div className="max-w-xl mx-auto bg-surface border border-divider rounded-xl shadow-lg p-3 flex items-center justify-center gap-3">
             <button
