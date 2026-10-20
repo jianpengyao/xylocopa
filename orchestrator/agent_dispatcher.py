@@ -1962,6 +1962,11 @@ class AgentDispatcher:
         from thumbnails import backfill_thumbnails
         asyncio.ensure_future(asyncio.to_thread(backfill_thumbnails))
 
+        # Catch the project Assets index up with messages imported while
+        # the server was down (first run after deploy = full build, ~1s)
+        from asset_index import startup_catch_up
+        asyncio.ensure_future(asyncio.to_thread(startup_catch_up))
+
         while self.running:
             try:
                 if not self.worker_mgr.ping():

@@ -13,6 +13,7 @@ Scopes (all dry-run by default; destructive actions gated on ``--apply``):
     - ``tasks.project_name`` → missing Project
     - ``messages.agent_id`` → missing Agent
     - ``starred_sessions.project`` → missing Project
+    - ``asset_refs.project`` / ``asset_marks.project`` → missing Project
     - ``agents.parent_id`` dangling (subagents whose parent row was deleted)
 
   Session layer
@@ -45,6 +46,7 @@ import time
 from typing import Any
 
 import yaml
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session as SASession
 
 # Make this file runnable both as a module AND as a script.
@@ -53,7 +55,7 @@ if __package__ in (None, ""):
 
 from config import CLAUDE_HOME, PROJECT_CONFIGS_PATH, PROJECTS_DIR
 from database import SessionLocal, engine
-from models import Agent, Message, Project, StarredSession, Task
+from models import Agent, AssetMark, AssetRef, Message, Project, StarredSession, Task
 from orphan_cleanup import scan_orphans, scan_stale_agents
 from route_helpers import is_managed_tmux_session, tmux_session_to_agent_prefix
 
@@ -192,6 +194,23 @@ def _scan_fk_orphans(db: SASession) -> dict[str, Any]:
         if s.project and s.project not in project_names
     ]
 
+    # asset_refs / asset_marks.project → missing project (grouped: the index
+    # can hold thousands of refs per project). The tables only exist once the
+    # server has run init_db with them, so skip them when absent — probe
+    # sqlite_master rather than catch the error: a rollback here would undo
+    # apply_all's already-flushed project-row deletes.
+    def _bad_asset_projects(model):
+        if db.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :n"),
+            {"n": model.__tablename__},
+        ).first() is None:
+            return []
+        rows = db.query(model.project, func.count()).group_by(model.project).all()
+        return [{"project": p, "count": n} for p, n in rows if p not in project_names]
+
+    bad_asset_refs = _bad_asset_projects(AssetRef)
+    bad_asset_marks = _bad_asset_projects(AssetMark)
+
     # agents.parent_id dangling (subagents whose parent was deleted)
     dangling_subagents = [
         {"id": a.id, "parent_id": a.parent_id, "name": a.name}
@@ -207,6 +226,8 @@ def _scan_fk_orphans(db: SASession) -> dict[str, Any]:
         "tasks_bad_project": bad_tasks,
         "messages_bad_agent": bad_messages,
         "starred_bad_project": bad_stars,
+        "asset_refs_bad_project": bad_asset_refs,
+        "asset_marks_bad_project": bad_asset_marks,
         "dangling_subagents": dangling_subagents,
     }
 
@@ -217,6 +238,8 @@ def _apply_fk_orphans(db: SASession, scan_result: dict[str, Any]) -> dict[str, i
         "tasks_bad_project_deleted": 0,
         "messages_bad_agent_deleted": 0,
         "starred_bad_project_deleted": 0,
+        "asset_refs_bad_project_deleted": 0,
+        "asset_marks_bad_project_deleted": 0,
         "dangling_subagents_deleted": 0,
     }
     if scan_result.get("messages_bad_agent"):
@@ -241,6 +264,18 @@ def _apply_fk_orphans(db: SASession, scan_result: dict[str, Any]) -> dict[str, i
         sids = [s["session_id"] for s in scan_result["starred_bad_project"]]
         counts["starred_bad_project_deleted"] = db.query(StarredSession).filter(
             StarredSession.session_id.in_(sids)
+        ).delete(synchronize_session=False)
+
+    if scan_result.get("asset_refs_bad_project"):
+        names = [r["project"] for r in scan_result["asset_refs_bad_project"]]
+        counts["asset_refs_bad_project_deleted"] = db.query(AssetRef).filter(
+            AssetRef.project.in_(names)
+        ).delete(synchronize_session=False)
+
+    if scan_result.get("asset_marks_bad_project"):
+        names = [r["project"] for r in scan_result["asset_marks_bad_project"]]
+        counts["asset_marks_bad_project_deleted"] = db.query(AssetMark).filter(
+            AssetMark.project.in_(names)
         ).delete(synchronize_session=False)
 
     if scan_result.get("dangling_subagents"):
@@ -448,6 +483,10 @@ def render_report(result: dict[str, Any]) -> str:
                           lambda m: f"msg={m['id'][:8]}  agent_id={m['agent_id'][:8]}"))
     buf.append(_fmt_list("starred_sessions.project → missing", F["starred_bad_project"],
                           lambda s: f"sid={s['session_id'][:8]}  project={s['project']}"))
+    buf.append(_fmt_list("asset_refs.project → missing", F.get("asset_refs_bad_project", []),
+                          lambda r: f"project={r['project']}  rows={r['count']}"))
+    buf.append(_fmt_list("asset_marks.project → missing", F.get("asset_marks_bad_project", []),
+                          lambda r: f"project={r['project']}  rows={r['count']}"))
     buf.append(_fmt_list("Dangling subagents (parent missing)", F["dangling_subagents"],
                           lambda a: f"{a['id'][:8]}  parent={a['parent_id'][:8]}"))
 

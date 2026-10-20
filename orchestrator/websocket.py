@@ -383,6 +383,21 @@ async def emit_session_star_changed(project: str, session_id: str, starred: bool
     })
 
 
+async def emit_assets_changed(project: str):
+    """Signal: the asset index gained new refs for a project. An open
+    Assets tab refetches GET /api/projects/{name}/assets."""
+    await ws_manager.broadcast("assets_changed", {"project": project})
+
+
+async def emit_asset_marks_changed(project: str, paths: list[str], **fields):
+    """Targeted signal: star/hide/note changed for a batch of asset paths.
+    Carries only the fields that were set so subscribers can patch local
+    state without a refetch."""
+    data = {"project": project, "paths": list(paths)}
+    data.update(fields)
+    await ws_manager.broadcast("asset_marks_changed", data)
+
+
 # ---- Chat-message event emitters ----
 #
 # Signal-only by design: each event carries only {agent_id, message_id}.

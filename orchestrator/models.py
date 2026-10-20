@@ -285,6 +285,53 @@ class BookmarkedMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class AssetRef(Base):
+    """Derived index (asset_index.py): one row per (message, path, source)
+    an agent mentioned / wrote / read / sent / presented. Rebuildable from
+    messages + webapps, so message_id/agent_id carry no FK — the file (and
+    its row) outlives purged messages and deleted agents.
+
+    path is the canonical project-relative posix path, or
+    "webapp:port:<port>" / "webapp:url:<url>" for non-file web apps.
+    source: "text" | "write" | "read" | "send" | "webapp".
+    """
+    __tablename__ = "asset_refs"
+    __table_args__ = (
+        UniqueConstraint("project", "path", "source", "message_id", name="uq_asset_refs"),
+        Index("ix_asset_refs_project_path", "project", "path"),
+        Index("ix_asset_refs_project_created", "project", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project: Mapped[str] = mapped_column(
+        String(100), ForeignKey("projects.name", ondelete="CASCADE"), nullable=False,
+    )
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(10), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    webapp_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class AssetMark(Base):
+    """User state per project asset (star / hide / note). Keyed by the same
+    canonical path as AssetRef; never touched by reindexing."""
+    __tablename__ = "asset_marks"
+    __table_args__ = (
+        Index("ix_asset_marks_project", "project"),
+    )
+
+    project: Mapped[str] = mapped_column(
+        String(100), ForeignKey("projects.name", ondelete="CASCADE"), primary_key=True,
+    )
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    starred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 

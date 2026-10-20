@@ -304,6 +304,8 @@ async def lifespan(app: FastAPI):
     _projects_router._main_event_loop = _main_event_loop
     from routers import bookmarks as _bookmarks_router
     _bookmarks_router._main_event_loop = _main_event_loop
+    import asset_index as _asset_index
+    _asset_index._main_event_loop = _main_event_loop
 
     init_db()
     logger.info("Database initialized")
@@ -851,6 +853,7 @@ from routers.logs import router as logs_router
 from routers.skills import router as skills_router
 from routers.stats import router as stats_router
 from routers.bookmarks import router as bookmarks_router
+from routers.assets import router as assets_router
 from routers.probes import router as probes_router
 from routers.terminal import router as terminal_router
 from routers.attention import router as attention_router
@@ -871,6 +874,7 @@ app.include_router(logs_router)
 app.include_router(skills_router)
 app.include_router(stats_router)
 app.include_router(bookmarks_router)
+app.include_router(assets_router)
 app.include_router(probes_router)
 app.include_router(terminal_router)
 app.include_router(attention_router)

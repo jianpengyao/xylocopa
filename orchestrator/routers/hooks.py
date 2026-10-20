@@ -2195,4 +2195,11 @@ async def hook_emit_message(request: Request, db: Session = Depends(get_db)):
     await emit_new_message(msg.agent_id, msg.id,
                            agent.name if agent else "",
                            agent.project if agent else "")
+    # webapp_present (MCP subprocess) just wrote a WebApp row + card: index
+    # it here, in the process that owns the WS clients.
+    try:
+        import asset_index
+        asset_index.schedule_catch_up()
+    except Exception:  # noqa: BLE001
+        logger.debug("asset_index schedule failed", exc_info=True)
     return {"ok": True}

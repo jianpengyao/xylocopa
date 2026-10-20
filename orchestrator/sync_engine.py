@@ -597,6 +597,15 @@ def _handle_streaming_update(ad, ctx: SyncContext, turns, current_size) -> str:
         from display_writer import update_last as _update_display
         _update_display(ctx.agent_id, last_msg.id)
 
+        # Grown content may now carry an asset path (the insert-time hook in
+        # sync_import_new_turns only saw the partial text).
+        try:
+            import asset_index
+            if asset_index.content_may_have_assets(_content):
+                asset_index.schedule_catch_up()
+        except Exception:  # noqa: BLE001 — never let indexing break sync
+            logger.debug("asset_index schedule failed", exc_info=True)
+
         ctx.last_content_hash = new_hash
         ctx.last_offset = current_size
         logger.info(
@@ -1235,6 +1244,16 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 asyncio.ensure_future(asyncio.to_thread(
                     generate_thumbnails_for_message, _c, ctx.project_path,
                 ))
+
+        # Project Assets index: same cheap prefilter idea — only wake the
+        # (coalesced, threaded) catch-up when a new turn could carry a path.
+        if _actually_inserted > 0:
+            try:
+                import asset_index
+                if asset_index.turns_may_have_assets(new_turns):
+                    asset_index.schedule_catch_up()
+            except Exception:  # noqa: BLE001 — never let indexing break sync
+                logger.debug("asset_index schedule failed", exc_info=True)
 
     finally:
         db.close()

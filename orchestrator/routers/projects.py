@@ -1740,12 +1740,14 @@ async def rename_project(name: str, body: ProjectRename, request: Request, db: S
     ), {"new_name": new_name, "display": new_display, "old_name": name})
     db.execute(update(Agent).where(Agent.project == name).values(project=new_name))
     db.execute(update(StarredSession).where(StarredSession.project == name).values(project=new_name))
-    from models import Task, ProgressInsight, SessionViewEvent, BookmarkedMessage
+    from models import Task, ProgressInsight, SessionViewEvent, BookmarkedMessage, AssetRef, AssetMark
     db.execute(update(Task).where(Task.project == name).values(project=new_name))
     db.execute(update(Task).where(Task.project_name == name).values(project_name=new_name))
     db.execute(update(ProgressInsight).where(ProgressInsight.project == name).values(project=new_name))
     db.execute(update(SessionViewEvent).where(SessionViewEvent.project == name).values(project=new_name))
     db.execute(update(BookmarkedMessage).where(BookmarkedMessage.project == name).values(project=new_name))
+    db.execute(update(AssetRef).where(AssetRef.project == name).values(project=new_name))
+    db.execute(update(AssetMark).where(AssetMark.project == name).values(project=new_name))
 
     ghost = db.execute(text("SELECT name FROM projects WHERE name = :old"), {"old": name}).fetchone()
     if ghost:
@@ -1935,6 +1937,9 @@ async def delete_project(name: str, request: Request, db: Session = Depends(get_
         db.query(Task).filter(Task.project == name).delete(synchronize_session=False)
         db.query(Agent).filter(Agent.project == name).delete(synchronize_session=False)
         db.query(StarredSession).filter(StarredSession.project == name).delete(synchronize_session=False)
+        from models import AssetRef, AssetMark
+        db.query(AssetRef).filter(AssetRef.project == name).delete(synchronize_session=False)
+        db.query(AssetMark).filter(AssetMark.project == name).delete(synchronize_session=False)
         db.delete(proj)
         db.commit()
         _remove_from_registry(name)

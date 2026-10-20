@@ -186,6 +186,8 @@ def delete_orphans(scan_result: dict) -> dict:
                     conn.execute(text("DELETE FROM starred_sessions WHERE project = :n"), {"n": name})
                     conn.execute(text("DELETE FROM progress_insights WHERE project = :n"), {"n": name})
                     conn.execute(text("DELETE FROM session_view_events WHERE project = :n"), {"n": name})
+                    conn.execute(text("DELETE FROM asset_refs WHERE project = :n"), {"n": name})
+                    conn.execute(text("DELETE FROM asset_marks WHERE project = :n"), {"n": name})
                     conn.execute(text("DELETE FROM projects WHERE name = :n"), {"n": name})
                     deleted_projects += 1
                 except Exception as e:
