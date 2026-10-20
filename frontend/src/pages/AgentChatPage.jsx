@@ -97,6 +97,7 @@ import { useToast } from "../contexts/ToastContext";
 import ChatSkeleton from "../components/skeletons/ChatSkeleton";
 import { agentBriefCache, processedSuggestionsCache, pendingSuggestionsCache } from "../lib/detailCache";
 import { consumePrefetch } from "../lib/chatPrefetch";
+import { focusTargetId } from "../lib/chatFocus";
 
 const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "IDLE"]);
 
@@ -3778,14 +3779,19 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
   // paints — otherwise the user sees a one-frame flash of "messages from
   // top" before the centered scroll, which reads as a flicker.
   const focusedMsgRef = useRef(false);
+  const agentLoaded = !!agent;
   useLayoutEffect(() => {
     if (focusedMsgRef.current) return;
-    if (loading || !messages?.length) return;
+    if (loading || !agentLoaded || !messages?.length) return;
     const params = new URLSearchParams(location.search);
     const focusId = params.get("focus");
     if (!focusId) return;
-    const el = document.querySelector(`[data-msg-id="${CSS.escape(focusId)}"]`);
+    const targetId = focusTargetId(sentMessages, focusId);
+    const el = document.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`);
     if (!el) {
+      // Loaded but not rendered on its own (e.g. stop_hook) — paging older
+      // can't help, so stop instead of pulling the whole history.
+      if (messages.some((m) => m.id === focusId)) { focusedMsgRef.current = true; return; }
       if (hasMore && !loadingMore) loadOlderMessages();
       return;
     }
@@ -3799,7 +3805,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     el.classList.add("bookmark-flash");
     setTimeout(() => el.classList.remove("bookmark-flash"), 2100);
     focusedMsgRef.current = true;
-  }, [loading, messages?.length, location.search, hasMore, loadingMore, loadOlderMessages]);
+  }, [loading, agentLoaded, messages, sentMessages, location.search, hasMore, loadingMore, loadOlderMessages]);
 
   // Search-result text highlight — runs on every messages-identity change,
   // not gated by focusedMsgRef. On busy agents (streaming / heavy WS),
@@ -3814,9 +3820,9 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const focusId = params.get("focus");
     const q = (params.get("q") || "").trim();
     if (!focusId || !q) return;
-    const el = document.querySelector(`[data-msg-id="${CSS.escape(focusId)}"]`);
+    const el = document.querySelector(`[data-msg-id="${CSS.escape(focusTargetId(sentMessages, focusId))}"]`);
     if (el) highlightTextMatches(el, q);
-  }, [loading, messages, location.search]);
+  }, [loading, messages, sentMessages, location.search]);
 
   // Flush a deferred "go to live tail" scroll. scrollToLiveTail sets the
   // pending flag and awaits loadNewerMessages; this layoutEffect runs

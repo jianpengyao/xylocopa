@@ -610,11 +610,13 @@ export default function ImageLightbox({ media, initialIndex = 0, onClose }) {
       {isMissing ? (
         <MissingFileCard filename={current.filename || ""} dark onRetry={refreshStat} />
       ) : isCurrentVideo ? (
+        // Poster: prefer the /api/thumbs frame (thumbSrc); the legacy sibling
+        // `<video>.thumb.jpg` must go before the query string or it corrupts ?token=.
         <video
           ref={videoRef}
           key={current.src}
           src={current.src}
-          poster={current.src + ".thumb.jpg"}
+          poster={current.thumbSrc || current.src.replace(/(\?|$)/, ".thumb.jpg$1")}
           preload="auto"
           playsInline
           webkit-playsinline=""
