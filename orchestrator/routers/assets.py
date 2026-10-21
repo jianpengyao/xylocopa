@@ -1,4 +1,5 @@
-"""Project Assets — files agents surfaced in chat (see asset_index.py).
+"""Project Assets — files agents surfaced in chat, plus the claude.ai
+artifact links they published (see asset_index.py / artifact_index.py).
 
 GET  /api/projects/{name}/assets        aggregated asset list (+ catch-up)
 POST /api/projects/{name}/assets/marks  batch star / hide / note
@@ -41,7 +42,9 @@ async def list_project_assets(name: str, include_missing: bool = False,
     def _work():
         get_project_or_404(db, name)
         try:
-            changed = asset_index.catch_up(db)
+            # interactive: no transcript reads under the index lock; Artifact
+            # calls still pending are resolved by the worker moments later.
+            changed = asset_index.catch_up(db, interactive=True)
         except Exception:  # noqa: BLE001 — serve the current index, not a 500
             logger.warning("asset_index: catch_up failed; listing current index",
                            exc_info=True)

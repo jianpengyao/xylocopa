@@ -6,6 +6,9 @@ Sources (AGENT messages only, plus the webapps registry):
   read    — Read tool call (agent looked at it; the "seen" tier)
   send    — SendUserFile tool call
   webapp  — webapp_present card (kind "webapp" message) or WebApp row
+  artifact — claude.ai artifact published by the Artifact tool, keyed
+            "artifact:<url>"; prose links to it add "text" refs
+            (artifact_index.py reads the URL / title / type from the transcript)
 
 Refs live in ``asset_refs`` (derived, rebuildable: bump ASSET_INDEX_VERSION
 to force a full rebuild); user state lives in ``asset_marks`` and is never
@@ -37,11 +40,13 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import quote
 
+import artifact_index
+
 logger = logging.getLogger(__name__)
 
 # Bump to wipe asset_refs and rebuild from scratch on the next catch_up
 # (detection or resolution rules changed).
-ASSET_INDEX_VERSION = 1
+ASSET_INDEX_VERSION = 2
 STATE_KEY = "asset_index_state"
 # Rows below the watermark that are rescanned each run: sync_engine updates
 # the newest agent message's content in place (streaming update), so the
@@ -57,7 +62,10 @@ KIND_EXTS = {
     "3d": ("ply", "obj", "stl", "glb", "gltf", "splat", "spz"),
 }
 EXT_KIND = {ext: kind for kind, exts in KIND_EXTS.items() for ext in exts}
-DELIVERED_SOURCES = frozenset({"text", "write", "send", "webapp"})
+DELIVERED_SOURCES = frozenset({"text", "write", "send", "webapp", "artifact"})
+# Deep-link preference between refs at the same agent tier: an artifact's
+# publish row beats prose mentioning it; delivered beats an agent-only Read.
+_REF_RANK = {"artifact": 2, "text": 1, "write": 1, "send": 1, "webapp": 1}
 
 _WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _READ_TOOLS = frozenset({"Read"})
@@ -102,12 +110,16 @@ _NOISE_SUBSTR = (
 _NOISE_SUFFIX = (".thumb.jpg", ".ios.mp4")
 
 
+def _has_ext_hint(lower: str) -> bool:
+    return any(ext in lower for ext in _PREFILTER_EXTS)
+
+
 def content_may_have_assets(content: str | None) -> bool:
     """Cheap substring prefilter before running the regexes."""
     if not content:
         return False
     lower = content.lower()
-    return any(ext in lower for ext in _PREFILTER_EXTS)
+    return _has_ext_hint(lower) or artifact_index.has_hint(lower)
 
 
 def turns_may_have_assets(turns) -> bool:
@@ -116,7 +128,8 @@ def turns_may_have_assets(turns) -> bool:
         if not t or t[0] != "assistant":
             continue
         meta = t[2] if len(t) > 2 else None
-        if isinstance(meta, dict) and (meta.get("file_path") or meta.get("files")):
+        if isinstance(meta, dict) and (meta.get("file_path") or meta.get("files")
+                                       or meta.get("tool_name") == "Artifact"):
             return True
         if content_may_have_assets(t[1]):
             return True
@@ -151,7 +164,7 @@ def extract_text_paths(content: str | None) -> list[tuple[str, bool]]:
     a/b.png), occasionally a real path with a space. Index those only when
     they resolve to an existing file.
     """
-    if not content_may_have_assets(content):
+    if not content or not _has_ext_hint(content.lower()):
         return []
     out: list[tuple[str, bool]] = []
     seen: set[str] = set()
@@ -178,7 +191,9 @@ def extract_message_refs(kind: str | None, content: str | None,
     """Raw refs for one AGENT message → [(source, raw_path, require_exists, webapp_meta)].
 
     webapp_meta is the message's metadata.webapp dict for source "webapp"
-    (raw_path None), else None.
+    (raw_path None), else None. An Artifact tool row gives ("artifact",
+    <tool_use_id>, …) — its URL is only in the transcript; a claude.ai
+    artifact link in prose gives ("text", <canonical url>, …).
     """
     if kind == "webapp":
         try:
@@ -194,7 +209,7 @@ def extract_message_refs(kind: str | None, content: str | None,
         tool = m.group(1) if m else None
         meta = None
         if meta_raw and ('"file_path"' in meta_raw or '"files"' in meta_raw
-                         or tool is None):
+                         or tool is None or tool == "Artifact"):
             try:
                 meta = json.loads(meta_raw)
             except (ValueError, TypeError):
@@ -202,6 +217,9 @@ def extract_message_refs(kind: str | None, content: str | None,
         if not isinstance(meta, dict):
             meta = {}
         tool = meta.get("tool_name") or tool
+        if tool == "Artifact":
+            tid = meta.get("tool_use_id")
+            return [("artifact", tid, False, None)] if isinstance(tid, str) and tid else []
         if tool in _WRITE_TOOLS:
             source = "write"
         elif tool in _READ_TOOLS:
@@ -226,7 +244,10 @@ def extract_message_refs(kind: str | None, content: str | None,
         return [r for r in refs if EXT_KIND.get(_ext_of(r[1])) and not _is_noise(r[1])]
 
     if kind in (None, "text"):
-        return [("text", raw, req, None) for raw, req in extract_text_paths(content)]
+        refs = [("text", raw, req, None) for raw, req in extract_text_paths(content)]
+        # Kept out of extract_text_paths, whose noise rule drops every "://".
+        refs.extend(("text", u, False, None) for u in artifact_index.extract_urls(content))
+        return refs
     return []
 
 
@@ -410,7 +431,9 @@ def _candidate_sql() -> str:
         "SELECT rowid, id, agent_id, kind, content, metadata, created_at "
         "FROM messages WHERE rowid > ? AND role = 'AGENT' AND ("
         "kind = 'webapp' OR metadata LIKE '%\"file_path\"%' "
-        "OR metadata LIKE '%\"files\"%' OR " + likes + ") ORDER BY rowid"
+        "OR metadata LIKE '%\"files\"%' OR " + likes + " "
+        "OR (kind = 'tool_use' AND content LIKE '> `Artifact`%') "
+        "OR content LIKE '%claude.ai/%') ORDER BY rowid"
     )
 
 
@@ -515,8 +538,12 @@ def _webapps_fingerprint(conn) -> list:
     return [row[0], row[1], row[2], pcount]
 
 
-def catch_up(db=None) -> set[str]:
-    """Index messages newer than the watermark; returns projects with new refs."""
+def catch_up(db=None, *, interactive: bool = False) -> set[str]:
+    """Index messages newer than the watermark; returns projects with new refs.
+
+    interactive (the GET handler): no transcript I/O under the lock —
+    Artifact calls not yet in the memo stay pending and the retry timer
+    hands them to the worker."""
     own = db is None
     if own:
         from database import SessionLocal
@@ -524,16 +551,20 @@ def catch_up(db=None) -> set[str]:
     try:
         with _index_lock:
             try:
-                return _catch_up_locked(db)
+                changed = _catch_up_locked(db, interactive)
             except Exception:
                 db.rollback()  # drop a half-written batch before db is reused
                 raise
+            n_pending = _artifact_pending  # read under the lock: a concurrent run rewrites it
     finally:
         if own:
             db.close()
+    _on_artifact_pending(n_pending)
+    return changed
 
 
-def _catch_up_locked(db) -> set[str]:
+def _catch_up_locked(db, interactive: bool = False) -> set[str]:
+    global _artifact_pending
     # Raw DBAPI connection throughout, committed directly: Session.commit()
     # would release the connection (NullPool closes it) mid-run.
     t0 = time.monotonic()
@@ -587,13 +618,53 @@ def _catch_up_locked(db) -> set[str]:
 
     # Phase 2: resolve against each agent's project (+ worktree).
     agents = _load_agents(conn, agent_ids)
+    art_rows: list[tuple] = []      # (mid, aid, created, tool_use_id)
+    art_mentions: list[tuple] = []  # (mid, aid, created, url)
     refs: list[tuple] = []
+    for mid, aid, created, raw_refs in pending:
+        for source, raw, _req, _wa in raw_refs:
+            if source == "artifact":
+                art_rows.append((mid, aid, created, raw))
+            elif source == "text" and raw.startswith("https://"):
+                art_mentions.append((mid, aid, created, raw))
+
+    # 2a: Artifact calls. Stubs are registered (and committed) before any
+    # transcript I/O and are not isolated: a DB error here propagates like
+    # any index error. Resolution and mentions are isolated — a failure
+    # there must never block file refs or the watermark; the stubs stay
+    # pending and the next run retries them.
+    # A full run's artifact pass also retries unavailable and stale-extract
+    # calls. When it can't run (a GET does no transcript I/O, or it failed),
+    # it stays owed in the state and the next worker run does it.
+    art_full = full or bool(state.get("artifact_full"))
+    art_done = False
+    artifact_index.register_calls(conn, art_rows, datetime.now(timezone.utc))
+    try:
+        art_refs, n_pending, fresh_projects = artifact_index.resolve_calls(
+            conn, art_rows, now=datetime.now(timezone.utc), full=art_full,
+            interactive=interactive)
+        art_done = not interactive
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        logger.warning("asset_index: artifact resolution failed; calls stay pending",
+                       exc_info=True)
+        art_refs, fresh_projects = [], set()
+        try:  # keep the retry timer armed for the stubs left pending
+            n_pending = conn.execute(
+                "SELECT COUNT(*) FROM artifact_calls WHERE outcome = 'pending'").fetchone()[0]
+        except Exception:  # noqa: BLE001
+            n_pending = 1
+    art_owed = art_full and not art_done
+
+    # 2b: files and web apps.
     for mid, aid, created, raw_refs in pending:
         ag = agents.get(aid)
         if not ag:
             continue
         a_project, a_worktree = ag
         for source, raw, req, wa in raw_refs:
+            if source == "artifact" or (source == "text" and raw.startswith("https://")):
+                continue
             try:
                 if source == "webapp":
                     proj = wa.get("project") or a_project
@@ -612,6 +683,19 @@ def _catch_up_locked(db) -> set[str]:
             except Exception:  # noqa: BLE001 — one bad ref must not stall the index
                 logger.debug("asset_index: resolve failed for %s", mid, exc_info=True)
 
+    # 2c: prose mentions of a key already published in the same project.
+    # Rows scanned by an earlier run, before their key existed, are picked
+    # up again in the projects where a call just published.
+    try:
+        if fresh_projects and start > 0:
+            art_mentions = artifact_index.backfill_mentions(conn, fresh_projects, start) \
+                + art_mentions
+        refs += artifact_index.mention_refs(conn, art_mentions, agents, art_refs)
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        logger.warning("asset_index: artifact mention pass failed", exc_info=True)
+    refs += art_refs
+
     changed = _insert_refs(conn, refs)
 
     fp = _webapps_fingerprint(conn)
@@ -623,12 +707,19 @@ def _catch_up_locked(db) -> set[str]:
             conn.rollback()  # project vanished mid-run; retried next run
             logger.warning("asset_index: webapp registry sync failed", exc_info=True)
 
-    if max_rowid != state.get("rowid") or full:
+    if max_rowid != state.get("rowid") or full or art_owed != bool(state.get("artifact_full")):
         state["rowid"] = max_rowid
         state["version"] = ASSET_INDEX_VERSION
+        if art_owed:
+            state["artifact_full"] = True
+        else:
+            state.pop("artifact_full", None)
         _save_state(conn, state)
         conn.commit()
     db.commit()  # end the Session's transaction (no-op at the DBAPI level)
+    # An owed full pass counts as pending work, so the timer hands it to
+    # the worker.
+    _artifact_pending = n_pending + art_owed
     (logger.info if full or changed else logger.debug)(
         "asset_index: scanned %d rows (from rowid %d) → %d refs, %d project(s) gained refs in %.2fs",
         scanned, start, len(refs), len(changed), time.monotonic() - t0,
@@ -644,6 +735,17 @@ _main_event_loop: asyncio.AbstractEventLoop | None = None
 _sched_lock = threading.Lock()
 _sched_running = False
 _sched_dirty = False
+
+# Artifact results land in the transcript 1-7 s after the tool row is
+# imported. While calls are pending, a timer re-runs the worker with
+# backoff (2, 7, 17, 47 s, then every 60 s) until they resolve or expire
+# (artifact_index.ARTIFACT_PENDING_TTL_S).
+_ARTIFACT_RETRY_DELAYS = (2, 5, 10, 30, 60)
+# Pending calls after the last run, +1 while a full artifact pass is owed
+# (written under _index_lock).
+_artifact_pending = 0
+_artifact_retry_idx = 0
+_artifact_timer: threading.Timer | None = None
 
 
 def schedule_catch_up() -> None:
@@ -692,6 +794,44 @@ def _sched_worker() -> None:
         with _sched_lock:
             _sched_running = False
         raise
+
+
+def _on_artifact_pending(n: int) -> None:
+    """After a catch_up (lock released): keep the retry timer armed while
+    Artifact calls are pending, else reset the backoff."""
+    global _artifact_retry_idx, _artifact_timer
+    if n > 0:
+        _arm_artifact_retry()
+        return
+    with _sched_lock:
+        _artifact_retry_idx = 0
+        timer, _artifact_timer = _artifact_timer, None
+    if timer is not None:
+        timer.cancel()
+
+
+def _arm_artifact_retry() -> None:
+    """One daemon timer at a time; each arming steps the backoff."""
+    global _artifact_retry_idx, _artifact_timer
+    try:
+        with _sched_lock:
+            if _artifact_timer is not None:
+                return
+            delays = _ARTIFACT_RETRY_DELAYS
+            delay = delays[min(_artifact_retry_idx, len(delays) - 1)]
+            _artifact_retry_idx += 1
+            timer = _artifact_timer = threading.Timer(delay, _artifact_retry_fire)
+            timer.daemon = True
+        timer.start()
+    except Exception:  # noqa: BLE001 — the next trigger retries anyway
+        logger.debug("asset_index: artifact retry arm failed", exc_info=True)
+
+
+def _artifact_retry_fire() -> None:
+    global _artifact_timer
+    with _sched_lock:
+        _artifact_timer = None
+    schedule_catch_up()  # worker run: reads transcripts, emits assets_changed
 
 
 def _emit_changed(projects: set[str]) -> None:
@@ -880,6 +1020,8 @@ def _new_agg(created) -> dict:
 def _mark_path_ok(root: str | None, path: str) -> bool:
     """Marks accept arbitrary client paths: a ref-less mark is listed only
     when its path is a well-formed asset key inside the project."""
+    if path.startswith(artifact_index.ARTIFACT_PREFIX):
+        return artifact_index.is_canonical_key(path)
     if path.startswith("webapp:port:"):
         return path[len("webapp:port:"):].isdigit()
     if path.startswith("webapp:url:"):
@@ -941,9 +1083,10 @@ def list_assets(db, project_name: str, include_missing: bool = False) -> dict:
             a["webapp_id"], a["webapp_when"] = wid, created or ""
         top = bool(agent_ok) and not parent_id and not is_sub
         # Deep-link target: a live top-level message first, then the bubble
-        # that showed the file to the user over a later agent-only Read.
+        # that showed the file to the user over a later agent-only Read (an
+        # artifact's publish row over prose mentioning it — _REF_RANK).
         key = (bool(msg_ok) and top, bool(msg_ok) and bool(agent_ok), bool(msg_ok),
-               source in DELIVERED_SOURCES, created or "")
+               _REF_RANK.get(source, 0), created or "")
         if a["best_key"] is None or key > a["best_key"]:
             a["best_key"] = key
             a["best"] = (aid if agent_ok else None,
@@ -960,6 +1103,16 @@ def list_assets(db, project_name: str, include_missing: bool = False) -> dict:
         # rebuild) is still the user's curation — list it with sources=[].
         if p not in agg and _mark_path_ok(root, p):
             agg[p] = _new_agg(upd)
+
+    # claude.ai artifacts: metadata from the artifact_calls memo. A ref-less
+    # mark gets it only when the artifact was published from this project,
+    # so a mark posted elsewhere never shows another project's title.
+    art_paths = [p for p in agg if p.startswith(artifact_index.ARTIFACT_PREFIX)]
+    art_meta = artifact_index.artifact_meta(conn, art_paths) if art_paths else {}
+    for p in art_paths:
+        if (agg[p]["nrefs"] == 0 and p in art_meta
+                and not artifact_index.key_in_project(conn, p, project_name)):
+            del art_meta[p]
 
     secret = conn.execute(
         "SELECT value FROM system_config WHERE key = 'jwt_secret'"
@@ -1029,8 +1182,12 @@ def list_assets(db, project_name: str, include_missing: bool = False) -> dict:
     for path, a in agg.items():
         starred, hidden, note = marks.get(path, (False, False, None))
         webapp = a["app"] or (webapps.get(a["webapp_id"]) if a["webapp_id"] else None)
-        size = mtime = None
-        if path.startswith("webapp:port:"):
+        size = mtime = art = None
+        if path.startswith(artifact_index.ARTIFACT_PREFIX):
+            art = art_meta.get(path) or artifact_index.minimal_meta(path)
+            exists = not art["deleted"]
+            name, dirname, ext = art["title"] or art["url"], "", ""
+        elif path.startswith("webapp:port:"):
             target = path[len("webapp:port:"):]
             exists = port_alive.get(int(target), False) if target.isdigit() else False
             name, dirname, ext = (webapp or {}).get("title") or f"localhost:{target}", "", ""
@@ -1048,8 +1205,11 @@ def list_assets(db, project_name: str, include_missing: bool = False) -> dict:
                         exists, size, mtime = True, st.st_size, st.st_mtime
                 except OSError:
                     pass
-        kind = ("webapp" if "webapp" in a["sources"] or path.startswith("webapp:")
-                else EXT_KIND.get(ext))
+        if art is not None:
+            kind = "artifact"
+        else:
+            kind = ("webapp" if "webapp" in a["sources"] or path.startswith("webapp:")
+                    else EXT_KIND.get(ext))
         if kind is None:
             continue
         if not exists and not include_missing and not starred:
@@ -1078,6 +1238,7 @@ def list_assets(db, project_name: str, include_missing: bool = False) -> dict:
             "hidden": hidden,
             "note": note,
             "webapp": webapp,
+            "artifact": art,
         })
     assets.sort(key=lambda x: x["last_seen_at"] or "", reverse=True)
     return {"assets": assets}

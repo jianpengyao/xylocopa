@@ -292,8 +292,9 @@ class AssetRef(Base):
     its row) outlives purged messages and deleted agents.
 
     path is the canonical project-relative posix path, or
-    "webapp:port:<port>" / "webapp:url:<url>" for non-file web apps.
-    source: "text" | "write" | "read" | "send" | "webapp".
+    "webapp:port:<port>" / "webapp:url:<url>" for non-file web apps, or
+    "artifact:<url>" for a claude.ai artifact (see ArtifactCall).
+    source: "text" | "write" | "read" | "send" | "webapp" | "artifact".
     """
     __tablename__ = "asset_refs"
     __table_args__ = (
@@ -330,6 +331,42 @@ class AssetMark(Base):
     hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class ArtifactCall(Base):
+    """Memo of Artifact tool calls read from session transcripts (artifact_index.py).
+    One row per CALL (tool_use_id); refs are per message row, since forked agents
+    and sibling subagents carry copies of one call. NOT wiped by an
+    ASSET_INDEX_VERSION bump: transcripts can be deleted, so these rows are the
+    only lasting copy of url / title / type per call. message_id and agent_id
+    (the lowest-rowid row seen, i.e. the original) carry no FK, same reasoning
+    as AssetRef. Written only through artifact_index (raw DBAPI), which lists
+    every column and formats timestamps with _db_ts."""
+    __tablename__ = "artifact_calls"
+    __table_args__ = (
+        Index("ix_artifact_calls_key", "artifact_key"),
+        Index("ix_artifact_calls_outcome", "outcome"),
+    )
+
+    tool_use_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    message_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)   # message time
+    indexed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)   # first registered
+    # publish | deleted | asset | ignored | error | pending | unavailable
+    outcome: Mapped[str] = mapped_column(String(12), nullable=False)
+    action: Mapped[str | None] = mapped_column(String(20), nullable=True)   # input.action or "publish"
+    artifact_key: Mapped[str | None] = mapped_column(Text, nullable=True)   # publish / deleted only
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)            # canonical url this call returned
+    artifact_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)          # <=300 chars
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)    # input.description, <=1000 chars
+    type_url: Mapped[str | None] = mapped_column(Text, nullable=True)       # this artifact's own type
+    type_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    types_json: Mapped[str | None] = mapped_column(Text, nullable=True)     # [[type_url, title], ...] seen in the result
+    version: Mapped[str | None] = mapped_column(String(40), nullable=True)  # opaque tur.version
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)         # "Version N" / tur.seq
+    extract_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class PushSubscription(Base):
