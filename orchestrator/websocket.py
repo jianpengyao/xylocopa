@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime, timezone
 
 from fastapi import WebSocket
@@ -151,23 +150,13 @@ ws_manager = ConnectionManager()
 
 
 async def websocket_endpoint(ws: WebSocket):
-    """WebSocket handler for /ws/status. Requires ?token=<jwt> if password is set."""
-    # Auth check — verify token if password protection is enabled
-    from database import SessionLocal
-    from auth import get_password_hash, get_jwt_secret, verify_token
+    """WebSocket handler for /ws/status. Requires a one-time ?ticket= (from
+    POST /api/auth/ws-ticket) when a password is set; see ws_auth.py."""
+    import ws_auth
 
-    if os.environ.get("DISABLE_AUTH", "").strip() not in ("1", "true", "yes"):
-        db = SessionLocal()
-        try:
-            pw_hash = get_password_hash(db)
-            if pw_hash is not None:
-                token = ws.query_params.get("token", "")
-                jwt_secret = get_jwt_secret(db)
-                if not token or not verify_token(token, jwt_secret):
-                    await ws.close(code=4001, reason="Unauthorized")
-                    return
-        finally:
-            db.close()
+    ctx = await ws_auth.authorize_ws(ws)
+    if ctx is None:
+        return
 
     await ws_manager.connect(ws)
 
@@ -182,6 +171,9 @@ async def websocket_endpoint(ws: WebSocket):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }))
 
+    # Re-checks the session while the socket is open; closes 4001 on
+    # revoke / expiry / idle. None when auth is off.
+    wd = ws_auth.start_watchdog(ws, ctx, lambda: ws_manager.disconnect(ws))
     try:
         while True:
             # Keep connection alive; client may send pings or viewing updates
@@ -218,6 +210,9 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception:
         logger.warning("WebSocket handler error", exc_info=True)
         ws_manager.disconnect(ws)
+    finally:
+        if wd is not None:
+            wd.cancel()
 
 
 # ---- Event helpers (called from dispatcher/main) ----

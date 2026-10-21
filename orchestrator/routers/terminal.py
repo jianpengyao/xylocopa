@@ -13,8 +13,10 @@ Protocol:
                                  {"type": "error", "message": "..."}
                                  {"type": "pong"}
 
-Auth mirrors /ws/status: HTTP middleware does not cover WebSocket handshakes,
-so the JWT rides in ``?token=`` and is verified in-endpoint.
+Auth mirrors /ws/status (ws_auth.py): HTTP middleware does not cover
+WebSocket handshakes, so a one-time ``?ticket=`` from POST /api/auth/ws-ticket
+is checked in-endpoint (close 4001 + reason on failure), and a watchdog closes
+the socket with 4001 when the session is revoked, expires or goes idle.
 """
 
 import asyncio
@@ -30,29 +32,14 @@ import termios
 from fastapi import APIRouter
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+import ws_auth
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _MAX_COLS = 500
 _MAX_ROWS = 300
-
-
-def _ws_authorized(ws: WebSocket) -> bool:
-    """Same auth policy as /ws/status: ?token=<jwt> required if password set."""
-    if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
-        return True
-    from auth import get_jwt_secret, get_password_hash, verify_token
-    from database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        if get_password_hash(db) is None:
-            return True
-        token = ws.query_params.get("token", "")
-        return bool(token) and verify_token(token, get_jwt_secret(db))
-    finally:
-        db.close()
 
 
 def _resolve_tmux_session(agent) -> str | None:
@@ -127,8 +114,10 @@ def _reap(proc: subprocess.Popen) -> None:
 
 @router.websocket("/ws/terminal/{agent_id}")
 async def terminal_ws(ws: WebSocket, agent_id: str):
-    if not _ws_authorized(ws):
-        await ws.close(code=4001, reason="Unauthorized")
+    # Refuses (accept + close 4001) on its own; on success the socket is
+    # still unaccepted, so the accept below stays the only one.
+    ctx = await ws_auth.authorize_ws(ws)
+    if ctx is None:
         return
 
     from database import SessionLocal
@@ -193,6 +182,8 @@ async def terminal_ws(ws: WebSocket, agent_id: str):
             pass
 
     pump = asyncio.create_task(_pump_output())
+    # On a 4001 the pump stops first, so no output follows the close frame.
+    wd = ws_auth.start_watchdog(ws, ctx, pump.cancel)
 
     try:
         while True:
@@ -228,6 +219,8 @@ async def terminal_ws(ws: WebSocket, agent_id: str):
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
+        if wd is not None:
+            wd.cancel()
         pump.cancel()
         try:
             loop.remove_reader(master)

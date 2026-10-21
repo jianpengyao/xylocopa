@@ -447,11 +447,12 @@ async def test_main_app_hooks_refused_through_proxy(monkeypatch):
 def test_main_app_websocket_cross_origin_rejected(monkeypatch):
     """Cross-site WebSocket hijacking of /ws/terminal and /ws/status is refused
     before the handler runs (which, with DISABLE_AUTH=1, would accept)."""
+    import ws_auth
     from main import app
-    from routers import terminal
 
     monkeypatch.setenv("DISABLE_AUTH", "1")
-    monkeypatch.setattr(terminal, "_ws_authorized", lambda ws: pytest.fail("handler reached"))
+    # Both handlers authorize through ws_auth.authorize_ws first.
+    monkeypatch.setattr(ws_auth, "authorize_ws", lambda ws: pytest.fail("handler reached"))
     for path in ("/ws/terminal/abcd1234", "/ws/status"):
         with pytest.raises(WebSocketDisconnect) as exc:
             with _ws_connect(app, NODE_SHARE, path, "https://evil.example"):
