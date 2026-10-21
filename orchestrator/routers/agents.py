@@ -18,6 +18,7 @@ from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+import hook_auth
 from config import CC_MODEL, CLAUDE_HOME, DISPLAY_DIR, PORT, VALID_MODELS
 from database import SessionLocal, get_db
 from models import (
@@ -295,7 +296,8 @@ def _write_agent_hooks_config(project_path: str):
         "..", "hooks", "pretooluse-safety.py",
     )
 
-    desired_hooks = _load_agent_hooks_template(base_url, hook_script)
+    # Every http hook also sends the per-agent nonce (hook_auth.py).
+    desired_hooks = hook_auth.inject_header(_load_agent_hooks_template(base_url, hook_script))
 
     settings_local_dir = os.path.join(project_path, ".claude")
     settings_local_path = os.path.join(settings_local_dir, "settings.local.json")
@@ -1489,6 +1491,9 @@ async def adopt_unlinked_session(
         if agent.status in (AgentStatus.STOPPED, AgentStatus.ERROR):
             agent.status = AgentStatus.IDLE
         agent.cli_sync = True
+        # The bound pane was not launched by xylocopa and carries no hook
+        # nonce; drop the stored one so its hooks are not refused.
+        hook_auth.forget_nonce(agent.id, db)
     else:
         agent_hex = _allocate_agent_id(db)
         agent = Agent(

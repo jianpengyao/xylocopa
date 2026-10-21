@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 import re
 
+import hook_auth
 from agent_dispatcher import ACTIVE_STATUSES
 from models import Agent, Project, StarredSession, Task
 from schemas import AgentBrief
@@ -53,8 +54,9 @@ API_REQUEST_TIMEOUT = 10
 
 # Env vars stripped from claude -p subprocesses to prevent false session
 # rotation signals. Includes both the new XY_AGENT_ID and the legacy
-# AHIVE_AGENT_ID (kept for back-compat with in-flight panes).
-SUBPROCESS_STRIP_VARS = {"XY_AGENT_ID", "AHIVE_AGENT_ID", "TMUX", "TMUX_PANE"}
+# AHIVE_AGENT_ID (kept for back-compat with in-flight panes), and the
+# per-agent hook nonce (hook_auth.py), which must not leak to other processes.
+SUBPROCESS_STRIP_VARS = {"XY_AGENT_ID", "AHIVE_AGENT_ID", "TMUX", "TMUX_PANE", "XY_HOOK_NONCE"}
 
 
 def subprocess_clean_env() -> dict[str, str]:
@@ -227,7 +229,14 @@ def create_tmux_claude_session(
         env_setup += ' && export ANTHROPIC_DEFAULT_SONNET_MODEL="claude-sonnet-5"'
     if agent_id:
         env_setup += f" && export XY_AGENT_ID={agent_id} && export AHIVE_AGENT_ID={agent_id}"
-    _sp.run(["tmux", "send-keys", "-t", pane_id, env_setup, "Enter"],
+        # Per-launch hook nonce (hook_auth.py): the shell reads it from a
+        # 0600 file and deletes the file, so the value never appears in the
+        # tmux command line, scrollback or history. None = fail-open (legacy).
+        registered = hook_auth.register_nonce(agent_id)
+        if registered is not None:
+            env_setup += hook_auth.shell_export(registered[1])
+    # Leading space: kept out of shell history (HISTCONTROL=ignoreboth).
+    _sp.run(["tmux", "send-keys", "-t", pane_id, " " + env_setup, "Enter"],
             check=True, capture_output=True, timeout=TMUX_CMD_TIMEOUT)
     # Launch Claude
     _sp.run(["tmux", "send-keys", "-t", pane_id, claude_cmd, "Enter"],

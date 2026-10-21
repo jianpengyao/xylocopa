@@ -30,13 +30,16 @@ fi
 PORT="${PORT:-8080}"
 AGENT_ID="${XY_AGENT_ID:-${AHIVE_AGENT_ID:-}}"
 
-# Try HTTP POST to orchestrator
-HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+# Try HTTP POST to orchestrator. The hook nonce reaches curl on stdin
+# (-H @-), never in argv: /proc/<pid>/cmdline is world-readable. An empty
+# header value is not sent.
+HTTP_CODE=$(printf 'X-Xy-Hook-Nonce: %s\n' "${XY_HOOK_NONCE:-}" | curl -sf -o /dev/null -w "%{http_code}" \
   -X POST "http://localhost:${PORT}/api/hooks/agent-session-start" \
   -H "Content-Type: application/json" \
   -H "X-Agent-Id: ${AGENT_ID}" \
   -H "X-Session-Cwd: ${PWD}" \
   -H "X-Tmux-Pane: ${TMUX_PANE:-}" \
+  -H @- \
   -d "$(printf '{"session_id":"%s","source":"%s"}' "$SESSION_ID" "$SESSION_SOURCE")" \
   2>/dev/null)
 

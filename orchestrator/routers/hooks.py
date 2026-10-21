@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+import hook_auth
 from database import SessionLocal, get_db
 from models import Agent, AgentMode, AgentStatus, Message, MessageRole, MessageStatus, Project, Task, TaskStatus
 from utils import utcnow as _utcnow
@@ -38,6 +39,11 @@ def _resolve_agent_for_hook(request: Request, body: dict) -> str:
     a stale agent and silently breaks unmanaged adopt detection.
 
     Returns the agent_id or "" when no authoritative match exists.
+
+    A resolved agent's per-launch hook nonce (X-Xy-Hook-Nonce, hook_auth.py)
+    is then checked: a mismatch raises 403 in enforce mode with auth on, and
+    is only logged otherwise. It never returns "" on a mismatch, which would
+    send agent-session-start down the unmanaged path.
     """
     tmux_pane = (request.headers.get("X-Tmux-Pane") or "").strip()
     sid = ""
@@ -52,6 +58,7 @@ def _resolve_agent_for_hook(request: Request, body: dict) -> str:
                 Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
             ).first()
             if agent:
+                hook_auth.check(request, agent.id, db)
                 return agent.id
         if sid:
             agent = db.query(Agent).filter(
@@ -60,6 +67,7 @@ def _resolve_agent_for_hook(request: Request, body: dict) -> str:
                 Agent.status.notin_([AgentStatus.STOPPED, AgentStatus.ERROR]),
             ).first()
             if agent:
+                hook_auth.check(request, agent.id, db)
                 return agent.id
     finally:
         db.close()
