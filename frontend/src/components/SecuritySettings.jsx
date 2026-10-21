@@ -1,23 +1,27 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   authChangePassword,
   authLogout,
   clearAuthToken,
   deviceLabel,
+  fetchAuthProtection,
   fetchAuthSessions,
   fetchAuthSettings,
   revokeAuthSession,
   revokeOtherSessions,
+  setAuthProtection,
   updateAuthSettings,
 } from "../lib/api";
 import { serverNow } from "../lib/serverTime";
 import { useAuth } from "../contexts/AuthContext";
 import { useToast } from "../contexts/ToastContext";
 
-// Monitor > Security: server idle lock, signed-in devices, password, sign
-// out. Everything here talks to /api/settings/auth and /api/auth/*; under
-// DISABLE_AUTH the settings are stored and take effect once auth is on.
+// Monitor > Security: password protection (DISABLE_AUTH in .env), server
+// idle lock, signed-in devices, password, sign out. Everything here talks to
+// /api/settings/auth and /api/auth/* (the switch: /api/auth/protection);
+// while protection is off the settings are stored and take effect once it
+// is turned on.
 
 const DEFAULT_IDLE_CHOICES = [0, 5, 15, 30, 60, 120, 240, 480, 1440];
 const MIN_PASSWORD_LENGTH = 8; // same as the server
@@ -45,6 +49,206 @@ const inputClass =
   "w-full px-3 py-2 rounded-lg bg-input border border-divider text-sm text-heading placeholder-hint focus:outline-none focus:border-accent";
 const smallButtonClass =
   "px-3 py-1.5 rounded-lg text-xs font-medium border border-divider text-label hover:bg-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+const primaryButtonClass =
+  "px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-90 text-white hover:bg-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+const dangerButtonClass =
+  "px-3 py-1.5 rounded-lg text-xs font-medium border danger-edge-40 text-danger hover:danger-tint-25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+
+// .env no longer matches the running state (edited by hand since the
+// server started). A payload without env_file_in_sync counts as in sync.
+function envFileHint(settings) {
+  if (!settings || settings.env_file_in_sync !== false) return null;
+  const v = settings.env_file_disable_auth;
+  const says = v === true
+    ? "now says DISABLE_AUTH=1 (protection off)"
+    : v === false
+      ? "now says DISABLE_AUTH=0 (protection on)"
+      : "no longer sets DISABLE_AUTH (protection on)";
+  return `The .env file was edited by hand and ${says}. Restart the server to apply it, or use this switch, which rewrites .env.`;
+}
+
+function protectionErrorText(err) {
+  if (err?.status === 429) {
+    return err.message && !/^HTTP /.test(err.message)
+      ? err.message
+      : "Too many failed attempts. Try again later.";
+  }
+  return err?.message || "Could not change password protection";
+}
+
+/**
+ * Password protection switch. Mirrors DISABLE_AUTH in the server's .env:
+ * the server rewrites that line and applies it at once. Either direction
+ * asks for the password first (or, turning it on with none set yet, for a
+ * new one). The switch only opens the confirm form; `onChanged(enabled,
+ * response)` runs after the server has switched.
+ */
+function PasswordProtectionCard({ protectionOn, settings, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const passwordSet = settings ? settings.password_set !== false : true;
+  // Turning protection on with no password yet: create one here.
+  const choosing = !protectionOn && !passwordSet;
+  const hint = envFileHint(settings);
+
+  const reset = () => {
+    setPassword("");
+    setNewPw("");
+    setConfirmPw("");
+    setError("");
+  };
+  const close = () => {
+    reset();
+    setOpen(false);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (choosing) {
+      if (newPw.length < MIN_PASSWORD_LENGTH) {
+        setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+        return;
+      }
+      if (newPw !== confirmPw) {
+        setError("Passwords don't match");
+        return;
+      }
+    }
+    const enabled = !protectionOn;
+    setBusy(true);
+    try {
+      // Turning on stores the new session inside setAuthProtection.
+      const res = await setAuthProtection(enabled
+        ? {
+          enabled,
+          password: choosing ? "" : password,
+          ...(choosing ? { new_password: newPw } : {}),
+          device_label: deviceLabel(),
+        }
+        : { enabled, password });
+      close();
+      await onChanged(enabled, res);
+    } catch (err) {
+      // 403 (wrong password), 429 (lockout), 500 (.env not writable): the
+      // server state did not change and this device stays signed in.
+      setError(protectionErrorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canSubmit = choosing ? !!newPw && !!confirmPw : !passwordSet || !!password;
+
+  return (
+    <div className="rounded-xl bg-surface shadow-card p-4" data-testid="protection-card">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium text-heading">Password protection</h3>
+          {protectionOn ? (
+            <p className="text-xs text-dim mt-1 leading-relaxed">
+              Password protection is on (DISABLE_AUTH=0) — every device needs the password.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 leading-relaxed">
+              Password protection is off on this server (DISABLE_AUTH=1). Settings below take effect when it is turned on.
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={protectionOn ? "true" : "false"}
+          aria-expanded={open ? "true" : "false"}
+          aria-label="Password protection"
+          onClick={() => (open ? close() : setOpen(true))}
+          disabled={!settings || busy}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+            protectionOn ? "bg-accent" : "bg-elevated"
+          }`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              protectionOn ? "translate-x-6" : "translate-x-1"
+            }`}
+          />
+        </button>
+      </div>
+      {hint && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2 leading-relaxed" data-testid="env-file-hint">
+          {hint}
+        </p>
+      )}
+      {open && (
+        <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-divider space-y-2" autoComplete="on">
+          <p className="text-xs text-dim leading-relaxed">
+            {protectionOn
+              ? "Anyone who can reach this server gets in without a password. Signed-in devices stay signed in."
+              : choosing
+                ? `Choose the server password (at least ${MIN_PASSWORD_LENGTH} characters). Every device will need it; this one stays signed in.`
+                : "Every device will need the password; this one stays signed in."}
+            {" "}Saved as DISABLE_AUTH in .env, so it survives a restart.
+          </p>
+          {choosing ? (
+            <>
+              <input
+                type="password"
+                autoComplete="new-password"
+                aria-label="Choose a password"
+                placeholder={`New password (at least ${MIN_PASSWORD_LENGTH} characters)`}
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                disabled={busy}
+                className={inputClass}
+              />
+              <input
+                type="password"
+                autoComplete="new-password"
+                aria-label="Confirm the password"
+                placeholder="Confirm password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                disabled={busy}
+                className={inputClass}
+              />
+            </>
+          ) : passwordSet && (
+            <input
+              type="password"
+              autoComplete="current-password"
+              aria-label="Password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              className={inputClass}
+            />
+          )}
+          {error && <p className="text-xs text-danger" role="alert">{error}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="submit"
+              disabled={busy || !canSubmit}
+              className={protectionOn ? dangerButtonClass : primaryButtonClass}
+            >
+              {protectionOn
+                ? (busy ? "Turning off…" : "Turn off")
+                : (busy ? "Turning on…" : "Turn on")}
+            </button>
+            <button type="button" onClick={close} disabled={busy} className={smallButtonClass}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
 
 export default function SecuritySettings() {
   const { authDisabled, refresh } = useAuth();
@@ -53,6 +257,9 @@ export default function SecuritySettings() {
 
   const [settings, setSettings] = useState(null);
   const [settingsError, setSettingsError] = useState("");
+  // The switch's .env state (GET /api/auth/protection); null = unknown,
+  // which the card reads as in sync.
+  const [protection, setProtection] = useState(null);
   const [savingIdle, setSavingIdle] = useState(false);
 
   const [sessions, setSessions] = useState(null); // SessionRow[]
@@ -76,6 +283,14 @@ export default function SecuritySettings() {
     }
   }, []);
 
+  const loadProtection = useCallback(async () => {
+    try {
+      setProtection(await fetchAuthProtection());
+    } catch {
+      setProtection(null);
+    }
+  }, []);
+
   const loadSessions = useCallback(async () => {
     try {
       const r = await fetchAuthSessions();
@@ -88,8 +303,45 @@ export default function SecuritySettings() {
 
   useEffect(() => {
     loadSettings();
+    loadProtection();
     loadSessions();
-  }, [loadSettings, loadSessions]);
+  }, [loadSettings, loadProtection, loadSessions]);
+
+  // Protection was switched from another device since this one's auth check
+  // (still signed in, but the app thinks it is on): re-check once, so the
+  // idle lock / activity machinery follows the server.
+  const syncedModeRef = useRef(null);
+  useEffect(() => {
+    const serverOff = settings?.auth_disabled;
+    if (typeof serverOff !== "boolean" || serverOff === authDisabled) return;
+    if (syncedModeRef.current === serverOff) return;
+    syncedModeRef.current = serverOff;
+    refresh().catch(() => {});
+  }, [settings, authDisabled, refresh]);
+
+  // The server switched protection (and rewrote .env). Turning it on, the
+  // new session is already stored (setAuthProtection); refresh() re-runs
+  // AuthGuard's check in place, which flips authDisabled — tickets, idle
+  // lock and media tokens follow without a reload or a visit to /login.
+  const handleProtectionChanged = async (enabled, res) => {
+    syncedModeRef.current = !enabled;
+    if (res?.settings) {
+      setSettings(res.settings);
+      setSettingsError("");
+    } else {
+      loadSettings();
+    }
+    if (res?.protection) setProtection(res.protection);
+    else loadProtection();
+    try {
+      await refresh();
+    } catch (err) {
+      // The bare WebSocket's 4001 re-runs the check later on its own.
+      console.warn("Auth re-check after the protection switch failed:", err);
+    }
+    toast.success(enabled ? "Password protection is on" : "Password protection is off");
+    loadSessions();
+  };
 
   // This browser's session is gone (signed out here, or revoked from the
   // list): drop it locally, purge cached thumbnails, show the lock screen.
@@ -191,18 +443,22 @@ export default function SecuritySettings() {
   const defaultIdle = settings?.default_idle_timeout_minutes ?? 30;
   const passwordSet = settings ? settings.password_set !== false : true;
   const others = (sessions || []).filter((s) => !s.current);
+  // The server's running value once loaded; until then this device's check.
+  const protectionOn = typeof settings?.auth_disabled === "boolean"
+    ? !settings.auth_disabled
+    : !authDisabled;
 
   return (
     <section>
       <h2 className="text-xs font-semibold text-dim uppercase tracking-wider mb-2">Security</h2>
       <div className="space-y-3">
-        {authDisabled && (
-          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-            <p className="text-xs text-amber-600 dark:text-amber-400 leading-relaxed">
-              Password protection is off on this server (DISABLE_AUTH=1). Settings below take effect when it is turned on.
-            </p>
-          </div>
-        )}
+        <PasswordProtectionCard
+          protectionOn={protectionOn}
+          // .env state from the switch's endpoint; settings (fresher after
+          // an idle-lock save) wins for the keys both carry.
+          settings={settings && { ...protection, ...settings }}
+          onChanged={handleProtectionChanged}
+        />
 
         {/* Idle lock */}
         <div className="rounded-xl bg-surface shadow-card p-4">
@@ -324,7 +580,9 @@ export default function SecuritySettings() {
             </form>
           ) : (
             <p className="text-xs text-dim mt-1 leading-relaxed">
-              No password is set yet. You will be asked to create one at sign-in once password protection is on.
+              No password is set yet. {protectionOn
+                ? "You will be asked to create one at sign-in."
+                : "Turning password protection on asks you to create one."}
             </p>
           )}
         </div>

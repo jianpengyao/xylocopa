@@ -24,6 +24,10 @@ export const AUTH_LOCKED_KEY = "cc-auth-locked";
 // Persisted in localStorage so the grace period survives iOS PWA page reloads.
 let _lastLoginTs = Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
 const _LOGIN_GRACE_MS = 3000; // 3-second grace window after login
+// Turn-on requests of setAuthProtection() still waiting for their answer.
+// The server switches auth on before that answer (this tab's new session)
+// arrives, so a token-less request failing meanwhile is not a logout.
+let _protectionTurningOn = 0;
 // A media token this close to its expiry is treated as gone, so a URL built
 // now does not die before the browser fetches it.
 const _MEDIA_EXPIRY_MARGIN_MS = 30 * 1000;
@@ -230,6 +234,11 @@ export class AuthTimeoutError extends Error {
 export async function expireSession(reason, { requestToken, source } = {}) {
   const current = getAuthToken();
   if (requestToken !== undefined && current && current !== requestToken) {
+    throw new AuthError(reason);
+  }
+  // Sent without a token while this tab is turning password protection on:
+  // the session it is about to receive covers it (setAuthProtection).
+  if (requestToken === null && _protectionTurningOn > 0) {
     throw new AuthError(reason);
   }
   let effective;
@@ -485,6 +494,41 @@ export async function mintMediaToken() {
   if (getAuthToken() === sent) setMediaToken(r?.token || null, r?.expires_at ?? null);
   return r;
 }
+/**
+ * Turn the server's password protection on or off (POST /api/auth/protection;
+ * the server rewrites DISABLE_AUTH in .env, then applies it at once).
+ *   on:  {enabled: true, password} — or, with no password set yet,
+ *        {enabled: true, new_password} — resolves to a LoginResponse plus
+ *        {settings, protection}. The session is stored right here, like
+ *        change-password, so this device stays signed in.
+ *   off: {enabled: false, password} resolves to {settings, protection};
+ *        sessions stay.
+ * A wrong password is a 403 (never a logout), a lockout 429, a failed .env
+ * write 500: Error(detail) with .status, like the other auth calls.
+ */
+export async function setAuthProtection({ enabled, password, new_password, device_label } = {}) {
+  const body = { enabled: !!enabled, password: password || "" };
+  if (new_password) body.new_password = new_password;
+  if (enabled && device_label) body.device_label = device_label;
+  if (enabled) _protectionTurningOn += 1;
+  try {
+    const res = await request("/api/auth/protection", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (res?.token) setAuthSession(res);
+    return res;
+  } finally {
+    if (enabled) _protectionTurningOn -= 1;
+  }
+}
+/**
+ * The protection switch's state: {auth_disabled, password_set,
+ * env_file_disable_auth, env_file_in_sync}. auth_disabled is the running
+ * value; env_file_disable_auth what .env says now (null when it has no
+ * DISABLE_AUTH line or cannot be read).
+ */
+export const fetchAuthProtection = () => request("/api/auth/protection");
 /** {idle_timeout_minutes, choices, default_idle_timeout_minutes, session_max_days, auth_disabled, password_set} */
 export const fetchAuthSettings = () => request("/api/settings/auth");
 export const updateAuthSettings = (body) =>
