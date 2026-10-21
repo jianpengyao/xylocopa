@@ -75,6 +75,8 @@ PLAN-*.md
 TODO.md
 filter-callbacks.py
 verification-*
+# Agents' visual-verification screenshots left in the repo root
+/verify_*.png
 
 # Dev artifacts
 *.sqlite3
