@@ -846,6 +846,14 @@ async def hook_agent_post_compact(request: Request):
     return {}
 
 
+def _schedule_asset_catch_up() -> None:
+    try:
+        import asset_index
+        asset_index.schedule_catch_up()
+    except Exception:  # noqa: BLE001 — hooks must never fail because of the index
+        logger.debug("asset_index schedule failed", exc_info=True)
+
+
 @router.post("/api/hooks/agent-tool-activity")
 async def hook_agent_tool_activity(request: Request):
     """Receive PreToolUse/PostToolUse hooks — broadcast tool activity to frontend.
@@ -883,6 +891,11 @@ async def hook_agent_tool_activity(request: Request):
         if ctx and ctx.compact_notified:
             _reset_compact_abandoned(ad, agent_id, f"sent {hook_event}")
 
+    # A finished Artifact call: re-index project assets now (the result may
+    # already be in the JSONL) and again after the flush wait below. Results
+    # still missing are retried by asset_index's own timer.
+    artifact_done = hook_event == "PostToolUse" and body.get("tool_name") == "Artifact"
+
     # Wake sync — import new assistant turns written to JSONL between
     # UserPromptSubmit and Stop.  Bare wake_sync handles the common case
     # where CC has already flushed; the background _await_jsonl_flush
@@ -891,10 +904,14 @@ async def hook_agent_tool_activity(request: Request):
     # sequences).
     if ad:
         ad.wake_sync(agent_id)
-        async def _tool_flush_then_wake(_aid):
+        async def _tool_flush_then_wake(_aid, _artifact):
             await _await_jsonl_flush(ad, _aid)
             ad.wake_sync(_aid)
-        asyncio.ensure_future(_tool_flush_then_wake(agent_id))
+            if _artifact:
+                _schedule_asset_catch_up()
+        asyncio.ensure_future(_tool_flush_then_wake(agent_id, artifact_done))
+    if artifact_done:
+        _schedule_asset_catch_up()
 
     tool_name = phase = summary = output_summary = ""
     is_error = False
