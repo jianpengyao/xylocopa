@@ -120,7 +120,8 @@ async def client(db_engine):
     app.dependency_overrides[get_db] = _override_get_db
 
     transport = ASGITransport(app=app)
-    c = AsyncClient(transport=transport, base_url="http://test")
+    # Host must pass request_guard's allowlist ("test" is not a local name).
+    c = AsyncClient(transport=transport, base_url="http://localhost")
     try:
         yield c
     finally:

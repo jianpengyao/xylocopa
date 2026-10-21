@@ -38,6 +38,9 @@ function loadDotenv(filePath) {
 const dotenv = loadDotenv(ENV_FILE);
 const port = dotenv.PORT || '8080';
 const frontendPort = dotenv.FRONTEND_PORT || '3000';
+// Plain-HTTP API on loopback only: browsers reach it through the HTTPS
+// frontend proxy, agents/hooks/MCP call http://localhost:PORT directly.
+const backendHost = dotenv.BACKEND_HOST || '127.0.0.1';
 
 module.exports = {
   apps: [
@@ -45,7 +48,7 @@ module.exports = {
       name: 'xylocopa-backend',
       cwd: path.join(ROOT, 'orchestrator'),
       script: VENV_PYTHON,
-      args: `-m uvicorn main:app --host 0.0.0.0 --port ${port}`,
+      args: `-m uvicorn main:app --host ${backendHost} --port ${port}`,
       interpreter: 'none',
       env: {
         ...dotenv,

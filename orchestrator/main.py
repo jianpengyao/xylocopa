@@ -20,11 +20,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from config import CORS_ORIGINS, PORT, PROJECT_CONFIGS_PATH, CC_MODEL, VALID_MODELS
+from config import BACKEND_HOST, CORS_ORIGINS, PORT, PROJECT_CONFIGS_PATH, CC_MODEL, VALID_MODELS, XY_ALLOWED_HOSTS
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import Agent, Project, Task, TaskStatus, AgentStatus
 from auth import get_jwt_secret, get_password_hash, verify_token
+from request_guard import RequestGuardMiddleware
 
 setup_logging()
 logger = logging.getLogger("orchestrator")
@@ -210,16 +211,20 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     import socket
 
+    # Probe the interface uvicorn binds (BACKEND_HOST, same family choice as
+    # uvicorn). On Linux a 0.0.0.0 listener also blocks a 127.0.0.1 bind, so
+    # an older instance started with --host 0.0.0.0 is still detected.
     port = PORT
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    family = socket.AF_INET6 if ":" in BACKEND_HOST else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("0.0.0.0", port))
-        except OSError:
+            s.bind((BACKEND_HOST, port))
+        except OSError as e:
             logger.error(
-                "Port %d already in use — another instance may be running. "
+                "Cannot bind %s:%d (%s) — another instance may be running. "
                 "Exiting to avoid conflicts.",
-                port,
+                BACKEND_HOST, port, e,
             )
             import sys
             sys.exit(1)
@@ -706,8 +711,10 @@ app.add_middleware(
     CORSMiddleware,
     # "null" is the literal Origin sent by sandboxed preview iframes (opaque
     # origin) — needed so their XHR/fetch preflights (e.g. TensorBoard's
-    # custom request headers) pass. Safe: allow_credentials is False and the
-    # session JWT lives in localStorage, unreachable from an opaque origin.
+    # custom request headers) pass. allow_credentials is False and the
+    # session JWT lives in localStorage, unreachable from an opaque origin;
+    # with DISABLE_AUTH=1 that is no protection, so request_guard refuses
+    # "Origin: null" on every method outside /api/preview/t|p/.
     allow_origins=CORS_ORIGINS + ["null"],
     allow_credentials=False,
     allow_methods=["*"],
@@ -777,7 +784,36 @@ async def hook_request_logger(request: Request, call_next):
     return response
 
 
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health", "/api/cert", "/api/webclip", "/api/hooks/", "/api/debug/auth-diag", "/api/debug/clear-cache", "/api/debug/mem-introspect", "/api/push/ack", "/api/probe-trigger/", "/api/preview/t/", "/api/preview/p/", "/api/dropbox/callback")
+# Auth-exempt endpoints as (path, methods). A path ending in "/" is a prefix
+# family (everything under it); any other path matches exactly — a bare
+# startswith("/api/cert") once also exempted POST /api/cert/regenerate.
+# methods=None allows any method. tests/test_auth_exempt.py pins the public
+# route set this produces, so widening it fails CI until reviewed.
+_GET_HEAD = frozenset({"GET", "HEAD"})
+_AUTH_EXEMPT = (
+    ("/api/auth/", None),              # login / set-password / check
+    ("/api/health", None),
+    ("/api/cert", _GET_HEAD),          # CA download for mobile trust setup
+    ("/api/cert/info", _GET_HEAD),
+    ("/api/webclip", None),
+    ("/api/hooks/", None),             # agents over loopback; proxy + request_guard refuse others
+    ("/api/debug/auth-diag", None),
+    ("/api/debug/clear-cache", None),
+    ("/api/debug/mem-introspect", None),
+    ("/api/push/ack", None),
+    ("/api/probe-trigger/", None),     # single-fire token in the path
+    ("/api/preview/t/", None),         # preview-scoped token in the path
+    ("/api/preview/p/", None),         # HMAC signature in the path
+    ("/api/dropbox/callback", None),
+)
+
+
+def _is_auth_exempt(method: str, path: str) -> bool:
+    for entry, methods in _AUTH_EXEMPT:
+        matched = path.startswith(entry) if entry.endswith("/") else path == entry
+        if matched and (methods is None or method in methods):
+            return True
+    return False
 
 
 @app.middleware("http")
@@ -787,10 +823,13 @@ async def auth_middleware(request: Request, call_next):
     if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
         return await call_next(request)
 
-    path = request.url.path
+    # The path the router dispatches on. request.url.path is rebuilt from the
+    # Host header, so a "?" or "#" smuggled into Host would shorten it to a
+    # "non-API" path and skip auth for a route that still runs.
+    path = request.scope["path"]
 
     # Skip auth for exempt paths and non-API static assets
-    if any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+    if _is_auth_exempt(request.method, path):
         return await call_next(request)
     if not path.startswith("/api/"):
         return await call_next(request)
@@ -823,6 +862,19 @@ async def auth_middleware(request: Request, call_next):
         db.close()
 
     return await call_next(request)
+
+
+# Host allowlist + Origin check + loopback-only /api/hooks/ (request_guard.py),
+# active even with DISABLE_AUTH=1. Keep this the LAST add_middleware /
+# @app.middleware call: Starlette wraps in reverse order of addition, and the
+# guard must screen every request — WebSocket handshakes included, which the
+# http middlewares above never see — before auth, CORS and the routes.
+app.add_middleware(
+    RequestGuardMiddleware,
+    allowed_hosts=XY_ALLOWED_HOSTS,
+    cors_origins=CORS_ORIGINS,
+    hook_port=PORT,
+)
 
 
 # ---- Voice and WebSocket ----

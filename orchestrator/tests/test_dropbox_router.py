@@ -102,7 +102,7 @@ async def test_link_start_validation(client, sync_dir):
     resp2 = await client.post(
         "/api/dropbox/link/start",
         json={"app_key": ""},
-        headers={"Origin": "https://localhost:3000"},
+        headers={"Origin": "https://localhost:3000", "Host": "localhost:3000"},
     )
     assert resp2.status_code == 200
     assert resp2.json()["mode"] == "relay"
@@ -459,7 +459,7 @@ async def test_link_start_redirect_mode(client, sync_dir):
     resp = await client.post(
         "/api/dropbox/link/start",
         json={"app_key": "abcdefghij1234", "mode": "direct"},
-        headers={"Origin": "https://localhost:3000"},
+        headers={"Origin": "https://localhost:3000", "Host": "localhost:3000"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -490,7 +490,7 @@ async def test_link_start_no_configured_key(client, sync_dir, monkeypatch):
     resp = await client.post(
         "/api/dropbox/link/start",
         json={"mode": "redirect"},
-        headers={"Origin": "https://localhost:3000"},
+        headers={"Origin": "https://localhost:3000", "Host": "localhost:3000"},
     )
     assert resp.status_code == 400
     assert "DROPBOX_APP_KEY" in resp.json()["detail"]
@@ -648,7 +648,7 @@ async def test_link_start_auto_resolves_relay_with_default_key(client, sync_dir,
     resp = await client.post(
         "/api/dropbox/link/start",
         json={"app_key": "defaultkey1234", "mode": "auto"},
-        headers={"Origin": "https://localhost:3000"},
+        headers={"Origin": "https://localhost:3000", "Host": "localhost:3000"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -680,7 +680,7 @@ async def test_link_start_auto_resolves_direct_with_env_key(client, sync_dir, mo
     resp = await client.post(
         "/api/dropbox/link/start",
         json={"app_key": "usercustom1234", "mode": "auto"},
-        headers={"Origin": "https://localhost:3000"},
+        headers={"Origin": "https://localhost:3000", "Host": "localhost:3000"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -700,7 +700,7 @@ async def test_relay_start_url_encoding(client, sync_dir, monkeypatch):
     resp = await client.post(
         "/api/dropbox/link/start",
         json={"app_key": "relaytest12345", "mode": "relay"},
-        headers={"Origin": "https://myhost:3000"},
+        headers={"Origin": "https://myhost.tail1234.ts.net:3000", "Host": "myhost.tail1234.ts.net:3000"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -717,7 +717,7 @@ async def test_relay_start_url_encoding(client, sync_dir, monkeypatch):
     authorize_decoded = parsed["authorize"][0]
     assert authorize_decoded.startswith("https://www.dropbox.com/oauth2/authorize?")
     # The return origin should match what was sent
-    assert parsed["return"][0] == "https://myhost:3000"
+    assert parsed["return"][0] == "https://myhost.tail1234.ts.net:3000"
 
 
 @pytest.mark.anyio

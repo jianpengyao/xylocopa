@@ -30,6 +30,12 @@ def _resolve(path: str) -> str:
 # itself by design (it avoids importing config.py).
 PORT = int(os.getenv("PORT", "8080"))
 
+# Interface uvicorn listens on — ecosystem.config.cjs passes the same .env
+# key as --host, and main.py's single-instance port probe binds it too.
+# Loopback by default: browsers reach the API through the HTTPS frontend
+# proxy, and agents/hooks/MCP call http://localhost:PORT directly.
+BACKEND_HOST = os.getenv("BACKEND_HOST", "").strip() or "127.0.0.1"
+
 # Worker config
 MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", "5"))
 TASK_TIMEOUT_SECONDS = int(os.getenv("TASK_TIMEOUT_SECONDS", "1800"))
@@ -153,4 +159,11 @@ CORS_ORIGINS = [
     o.strip() for o in
     os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
     if o.strip()
+]
+
+# Request guard (request_guard.py): Host names accepted in addition to IP
+# literals, localhost, this machine's hostname and *.ts.net. Comma-separated;
+# an entry starting with "." matches that domain and its subdomains.
+XY_ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv("XY_ALLOWED_HOSTS", "").split(",") if h.strip()
 ]
