@@ -1,13 +1,9 @@
 const MUTED_KEY = "xylocopa-muted-agents";
-const AGENTS_NOTIF_KEY = "xylocopa-agents-notifications-enabled";
-const TASKS_NOTIF_KEY = "xylocopa-tasks-notifications-enabled";
 
 // One-time migration of legacy "agenthive-*" localStorage keys
 try {
   const pairs = [
     ["agenthive-muted-agents", MUTED_KEY],
-    ["agenthive-agents-notifications-enabled", AGENTS_NOTIF_KEY],
-    ["agenthive-tasks-notifications-enabled", TASKS_NOTIF_KEY],
   ];
   for (const [oldK, newK] of pairs) {
     const legacy = localStorage.getItem(oldK);
@@ -41,28 +37,6 @@ export function setAgentMuted(agentId, muted) {
   else set.delete(agentId);
   localStorage.setItem(MUTED_KEY, JSON.stringify([...set]));
   window.dispatchEvent(new CustomEvent("agent-mute-changed", { detail: { agentId, muted } }));
-}
-
-/** Check if agent notifications are globally enabled. */
-export function isAgentNotificationsEnabled() {
-  const v = localStorage.getItem(AGENTS_NOTIF_KEY);
-  return v !== "0";
-}
-
-/** Set global agent notifications enabled state. */
-export function setAgentNotificationsEnabled(enabled) {
-  localStorage.setItem(AGENTS_NOTIF_KEY, enabled ? "1" : "0");
-}
-
-/** Check if task notifications are globally enabled. */
-export function isTaskNotificationsEnabled() {
-  const v = localStorage.getItem(TASKS_NOTIF_KEY);
-  return v !== "0";
-}
-
-/** Set global task notifications enabled state. */
-export function setTaskNotificationsEnabled(enabled) {
-  localStorage.setItem(TASKS_NOTIF_KEY, enabled ? "1" : "0");
 }
 
 /** Agents currently being viewed (across all panes / tabs). */

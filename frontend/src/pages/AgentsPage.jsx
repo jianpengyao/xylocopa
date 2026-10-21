@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Bell, BellOff, Link2, ChevronDown, ChevronUp, X } from "lucide-react";
+import { Link2, ChevronDown, ChevronUp, X } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { fetchAgents, stopAgent, deleteAgent, scanAgents, wakeSyncAll, searchMessages, markAgentRead, updateNotificationSettings, fetchUnlinkedSessions, replayPendingUnlinked, adoptUnlinkedSession, convertAndAdoptUnlinkedSession, dropUnlinkedSession, unstarSession, clog } from "../lib/api";
+import { fetchAgents, stopAgent, deleteAgent, scanAgents, wakeSyncAll, searchMessages, markAgentRead, fetchUnlinkedSessions, replayPendingUnlinked, adoptUnlinkedSession, convertAndAdoptUnlinkedSession, dropUnlinkedSession, unstarSession, clog } from "../lib/api";
 import { relativeTime } from "../lib/formatters";
 import { POLL_INTERVAL, SYNC_SETTLE_DELAY_GLOBAL } from "../lib/constants";
 import PageHeader from "../components/PageHeader";
 import FilterTabs from "../components/FilterTabs";
 import AgentRow from "../components/AgentRow";
+import DeviceNotifBell from "../components/DeviceNotifBell";
 import useDraft from "../hooks/useDraft";
-import useWebSocket, { useWsEvent, isAgentNotificationsEnabled, setAgentNotificationsEnabled } from "../hooks/useWebSocket";
+import useWebSocket, { useWsEvent } from "../hooks/useWebSocket";
 import usePageVisible from "../hooks/usePageVisible";
 import { useUnread } from "../contexts/UnreadContext";
 import { useToast } from "../contexts/ToastContext";
@@ -81,18 +82,6 @@ export default function AgentsPage({ theme, onToggleTheme, isActive = true }) {
     if (type === "error") toast.error(message);
     else toast.success(message);
   }, [toast]);
-
-  // Notification toggle
-  const [agentNotifsOn, setAgentNotifsOn] = useState(() => isAgentNotificationsEnabled());
-
-  const handleToggleAgentNotifs = useCallback(() => {
-    const next = !agentNotifsOn;
-    setAgentNotifsOn(next);
-    setAgentNotificationsEnabled(next);
-    updateNotificationSettings({ agents_enabled: next }).catch(() => console.warn("Failed to update notification settings"));
-    showToast(next ? "Agent notifications enabled" : "Agent notifications disabled");
-    window.dispatchEvent(new CustomEvent("agent-notifs-changed", { detail: { enabled: next } }));
-  }, [agentNotifsOn, showToast]);
 
   // Message content search
   const [searchResults, setSearchResults] = useState(null);
@@ -235,20 +224,17 @@ export default function AgentsPage({ theme, onToggleTheme, isActive = true }) {
     }
   }, [showToast, load]);
 
-  // Cross-pane sync: notification toggle + data refresh + star toggle
+  // Cross-pane sync: data refresh + star toggle
   useEffect(() => {
-    const onNotifsChanged = (e) => setAgentNotifsOn(e.detail.enabled);
     const onDataChanged = () => { load(); loadUnlinked(); };
     const onStarChanged = (e) => {
       const { agentId, starred } = e.detail || {};
       if (!agentId) return;
       agentsActions.patchOne(agentId, { starred });
     };
-    window.addEventListener("agent-notifs-changed", onNotifsChanged);
     window.addEventListener("agents-data-changed", onDataChanged);
     window.addEventListener("agent-star-changed", onStarChanged);
     return () => {
-      window.removeEventListener("agent-notifs-changed", onNotifsChanged);
       window.removeEventListener("agents-data-changed", onDataChanged);
       window.removeEventListener("agent-star-changed", onStarChanged);
     };
@@ -602,18 +588,7 @@ export default function AgentsPage({ theme, onToggleTheme, isActive = true }) {
         onToggleTheme={onToggleTheme}
         actions={!selecting ? (
           <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={handleToggleAgentNotifs}
-              title={agentNotifsOn ? "Mute all agent notifications" : "Unmute all agent notifications"}
-              className={`w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input transition-colors ${agentNotifsOn ? "text-accent" : "text-dim"}`}
-            >
-              {agentNotifsOn ? (
-                <Bell className="w-4 h-4" />
-              ) : (
-                <BellOff className="w-4 h-4" />
-              )}
-            </button>
+            <DeviceNotifBell />
             <button
               type="button"
               onClick={handleRefresh}

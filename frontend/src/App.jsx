@@ -6,7 +6,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import useTheme from "./hooks/useTheme";
 import { authCheck, clearAuthToken, fetchClaudeMdPending, getAuthToken, resolveAuthDisabled } from "./lib/api";
 import { nextBackoff, onNetworkResume } from "./lib/reconnect";
-import { isPushSupported, setupPushNotifications, reRegisterExistingSubscription } from "./lib/pushNotifications";
+import { startPushDeviceSync } from "./lib/pushNotifications";
 import useIdleLock from "./hooks/useIdleLock";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
@@ -207,14 +207,12 @@ function AuthGuard({ children }) {
               else localStorage.removeItem(AUTH_DISABLED_KEY);
             } catch { /* storage unavailable */ }
           }).catch(() => {});
-          // Always re-send existing subscription to backend (works in dev mode too)
-          reRegisterExistingSubscription();
-          // Full setup (SW registration + new subscription) only in production
-          if (isPushSupported()) {
-            setupPushNotifications().catch((err) => {
-              console.warn("Push notification setup failed:", err);
-            });
-          }
+          // Re-register this device's push subscription and adopt its
+          // server-side switches. Never prompts: permission is asked only
+          // from the bell (a user gesture — required on iOS).
+          startPushDeviceSync().catch((err) => {
+            console.warn("Push notification sync failed:", err);
+          });
         } else if (token) {
           clearAuthToken("authcheck-not-authenticated");
           if (!consumeCertFlowRedirect()) navigateRef.current("/login", { replace: true });

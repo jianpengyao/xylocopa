@@ -540,11 +540,6 @@ export const fetchDropboxFolders = (project) =>
 export const fetchProjectDropboxStatus = (project) =>
   request(`/api/projects/${e(project)}/dropbox/status`);
 
-// --- Notification Settings ---
-export const fetchNotificationSettings = () => request("/api/settings/notifications");
-export const updateNotificationSettings = (data) =>
-  request("/api/settings/notifications", { method: "PUT", body: JSON.stringify(data) });
-
 // --- FormData helper (shared by voice + upload) ---
 async function formDataRequest(url, formData, errorLabel = "Request", opts = {}) {
   const headers = {};
