@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
-import CertGuidePage, { CERT_FLOW_KEY, CERT_FLOW_TTL_MS } from "./pages/CertGuidePage";
+import CertGuidePage from "./pages/CertGuidePage";
 import ErrorBoundary from "./components/ErrorBoundary";
+import AuthGuard from "./components/AuthGuard";
 import useTheme from "./hooks/useTheme";
-import { authCheck, clearAuthToken, fetchClaudeMdPending, getAuthToken, resolveAuthDisabled } from "./lib/api";
-import { nextBackoff, onNetworkResume } from "./lib/reconnect";
-import { startPushDeviceSync } from "./lib/pushNotifications";
-import useIdleLock from "./hooks/useIdleLock";
+import { fetchClaudeMdPending } from "./lib/api";
+import useAuthSync from "./hooks/useAuthSync";
+import { setUpdateScreen } from "./lib/swUpdate";
 import usePageVisible from "./hooks/usePageVisible";
 import { MonitorProvider } from "./contexts/MonitorContext";
 import { ToastProvider } from "./contexts/ToastContext";
@@ -23,10 +23,6 @@ import BottomNavBar from "./components/BottomNavBar";
 import RouteFallback from "./components/skeletons/RouteFallback";
 
 const MODULE_RELOAD_KEY = "ah:module-import-reload-attempted";
-const AUTH_DISABLED_KEY = "xy:auth-disabled";
-// Server-down probe cadence (AuthGuard): 2s, growing 1.5x to a 10s cap, forever.
-const SERVER_PROBE_INITIAL_MS = 2000;
-const SERVER_PROBE_MAX_MS = 10000;
 
 async function clearModuleCachesBestEffort() {
   try {
@@ -143,179 +139,6 @@ if (typeof window !== "undefined") {
   };
 }
 
-
-function AuthGuard({ children }) {
-  const navigate = useNavigate();
-  const [checked, setChecked] = useState(false);
-  const [authed, setAuthed] = useState(false);
-  const [serverDown, setServerDown] = useState(false);
-  // Server runs with DISABLE_AUTH: no password anywhere, so the idle lock
-  // (which clears the token and bounces to /login) must stay off. Seeded
-  // from the last auth check: useIdleLock runs on mount, before this boot's
-  // check answers, and after >30 min idle it bounced every cold start
-  // through /login (AUTH_DIAG reason=idle-lock even with DISABLE_AUTH).
-  const [authDisabled, setAuthDisabled] = useState(() => {
-    try { return localStorage.getItem(AUTH_DISABLED_KEY) === "1"; } catch { return false; }
-  });
-  // Latest navigate() without making it an effect dependency: under
-  // <BrowserRouter>, useNavigate() returns a new function on every pathname
-  // change, and the auth check used to re-run on every in-app navigation —
-  // one transient failure while tapping a tab unmounted the whole app
-  // behind the reconnect screen.
-  const navigateRef = useRef(navigate);
-  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
-  // Set by the server-down probe effect; lets the Retry button probe now.
-  const retryNowRef = useRef(null);
-
-  // Auto-lock after 30 min of inactivity (clears token + redirects to login)
-  useIdleLock(navigate, { enabled: !authDisabled });
-
-  // Listen for auth-expired events dispatched by api.js (graceful 401 handling)
-  useEffect(() => {
-    const handler = () => {
-      clearAuthToken("auth-expired-event");
-      navigateRef.current("/login", { replace: true });
-    };
-    window.addEventListener("auth-expired", handler);
-    return () => window.removeEventListener("auth-expired", handler);
-  }, []);
-
-  // If the user just clicked the CA-cert download on /cert-guide, the same-tab
-  // navigation can land them at "/" with no auth. Bounce them back to
-  // /cert-guide instead of /login (consume once, TTL-bounded).
-  const consumeCertFlowRedirect = useCallback(() => {
-    const ts = sessionStorage.getItem(CERT_FLOW_KEY);
-    if (!ts) return false;
-    sessionStorage.removeItem(CERT_FLOW_KEY);
-    if (Date.now() - Number(ts) > CERT_FLOW_TTL_MS) return false;
-    navigateRef.current("/cert-guide", { replace: true });
-    return true;
-  }, []);
-
-  // One auth check. Network failures / 5xx flip to the server-down screen,
-  // whose probe keeps trying until the server answers (see below).
-  const attemptAuth = useCallback((token) => {
-    authCheck()
-      .then((r) => {
-        if (r.authenticated) {
-          setAuthed(true);
-          setServerDown(false);
-          resolveAuthDisabled(r).then((disabled) => {
-            setAuthDisabled(disabled);
-            try {
-              if (disabled) localStorage.setItem(AUTH_DISABLED_KEY, "1");
-              else localStorage.removeItem(AUTH_DISABLED_KEY);
-            } catch { /* storage unavailable */ }
-          }).catch(() => {});
-          // Re-register this device's push subscription and adopt its
-          // server-side switches. Never prompts: permission is asked only
-          // from the bell (a user gesture — required on iOS).
-          startPushDeviceSync().catch((err) => {
-            console.warn("Push notification sync failed:", err);
-          });
-        } else if (token) {
-          clearAuthToken("authcheck-not-authenticated");
-          if (!consumeCertFlowRedirect()) navigateRef.current("/login", { replace: true });
-        } else {
-          if (!consumeCertFlowRedirect()) navigateRef.current("/login", { replace: true });
-        }
-        setChecked(true);
-      })
-      .catch((err) => {
-        // Network failures (TypeError from fetch) or 5xx → server is down.
-        // 401 is handled inside request() via auth-expired event.
-        const expected = err instanceof TypeError || (err.message && /^HTTP 5\d\d/.test(err.message));
-        if (!expected) console.warn("Auth check failed with unexpected error:", err);
-        setServerDown(true);
-        setChecked(true);
-      });
-  }, [consumeCertFlowRedirect]);
-
-  // Once on mount — not on every route change (see navigateRef above).
-  useEffect(() => {
-    attemptAuth(getAuthToken());
-  }, [attemptAuth]);
-
-  // Server-down probe: never gives up. Capped backoff (2s → 10s), plus an
-  // immediate probe when the PWA is foregrounded or the browser reports the
-  // network is back. The previous 60s give-up left a dead "Unable to reach
-  // server" screen whose only exit was a full page reload — which, with the
-  // old service worker, re-entered the very route that was failing.
-  useEffect(() => {
-    if (!serverDown) return;
-    let cancelled = false;
-    let inFlight = false;
-    let timer = null;
-    let delay = SERVER_PROBE_INITIAL_MS;
-    const probe = async () => {
-      timer = null;
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        await authCheck();
-        if (cancelled) return;
-        // Server is back — soft reset: re-run auth flow without unmounting the app
-        setServerDown(false);
-        setChecked(false);           // causes the Loading... state to render briefly
-        attemptAuth(getAuthToken()); // re-run the normal auth flow — this will set checked+authed again
-      } catch {
-        if (cancelled) return;
-        timer = setTimeout(probe, delay);
-        delay = nextBackoff(delay, { max: SERVER_PROBE_MAX_MS });
-      } finally {
-        inFlight = false;
-      }
-    };
-    const probeNow = () => {
-      if (cancelled) return;
-      clearTimeout(timer);
-      timer = null;
-      delay = SERVER_PROBE_INITIAL_MS;
-      probe();
-    };
-    retryNowRef.current = probeNow;
-    timer = setTimeout(probe, SERVER_PROBE_INITIAL_MS);
-    const offResume = onNetworkResume(probeNow);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      offResume();
-      retryNowRef.current = null;
-    };
-  }, [serverDown, attemptAuth]);
-
-  if (!checked) {
-    return (
-      <div className="flex items-center justify-center h-full bg-page">
-        <div className="animate-pulse text-dim">Loading...</div>
-      </div>
-    );
-  }
-
-  if (serverDown) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-page gap-4">
-        <p className="text-label text-sm animate-pulse">Reconnecting to server...</p>
-        <button
-          type="button"
-          onClick={() => retryNowRef.current?.()}
-          className="px-4 py-2 rounded-lg bg-accent text-white text-sm hover:bg-accent transition-colors"
-        >
-          Retry now
-        </button>
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="text-dim text-xs underline"
-        >
-          Reload page
-        </button>
-      </div>
-    );
-  }
-
-  return authed ? children : null;
-}
 
 function AppRoutes({ themeProps }) {
   const location = useLocation();
@@ -597,6 +420,8 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const showDebug = useDebugLines();
+  // Cross-tab login / logout / idle-lock sync (storage events).
+  useAuthSync();
 
   // SW update gate — block all UI (including LoginPage) until we know
   // whether a new Service Worker is pending. Prevents the race where SW
@@ -619,8 +444,8 @@ export default function App() {
         const pending = reg.installing || reg.waiting;
         if (!pending) { release(); return; }
         setSwState('updating');
-        // vite-plugin-pwa reloads the page when the update activates; if that
-        // does not happen (iOS), release the gate once the worker settles.
+        // lib/swUpdate.js reloads the page when the update takes control; if
+        // that does not happen (iOS), release the gate once the worker settles.
         pending.addEventListener('statechange', () => {
           if (pending.state === 'activated' || pending.state === 'redundant') release();
         });
@@ -632,6 +457,11 @@ export default function App() {
     const timer = setTimeout(release, 8000);
     return () => { settled = true; clearTimeout(timer); };
   }, []);
+  // While the gate covers the UI no input can be lost: an update reload
+  // (lib/swUpdate.js) runs at once even on /login, as the gate promises.
+  useEffect(() => {
+    setUpdateScreen(swState !== 'ready');
+  }, [swState]);
 
   // Service Worker notification click — split-screen aware navigation.
   // Listener is mounted ONCE and reads pathname/navigate via refs so it

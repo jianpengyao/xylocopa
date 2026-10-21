@@ -1,6 +1,8 @@
 import { useState, useCallback, useMemo } from "react";
 import { authedFetch } from "../lib/api";
 import { parseFileUrl, useBatchExists } from "../lib/mediaState";
+import { stripAuthParams, withCurrentMediaToken } from "../lib/urls";
+import useMediaToken from "../hooks/useMediaToken";
 import MissingFileCard from "./MissingFileCard";
 import ImageLightbox from "./ImageLightbox";
 
@@ -297,7 +299,7 @@ function DocGroupCard({ docs, statMap, onRetry }) {
       {expanded && (
         <div className="border-t border-divider max-h-60 overflow-y-auto">
           {docs.map((att) => {
-            const stat = statMap[att.resolvedUrl];
+            const stat = statMap[stripAuthParams(att.resolvedUrl)];
             // Non-project URLs (uploads, http) have no stat entry — treat as exists.
             const exists = stat ? stat.exists : true;
             return <DocGroupRow key={att.path} att={att} exists={exists} onRetry={onRetry} />;
@@ -310,14 +312,24 @@ function DocGroupCard({ docs, statMap, onRetry }) {
 
 // --- Main component ---
 
-export default function FileAttachments({ attachments, compact }) {
+export default function FileAttachments({ attachments: given, compact }) {
+  // Callers memoize attachments (ChatBubble), so their URLs keep the media
+  // token of their first render. Re-stamp them with the current token, and
+  // re-render when AuthGuard re-mints it, so thumbnails, downloads and the
+  // lightbox outlive the old token.
+  const mediaToken = useMediaToken();
+  const attachments = useMemo(() => given && given.map((a) => ({
+    ...a,
+    resolvedUrl: withCurrentMediaToken(a.resolvedUrl, mediaToken),
+    thumbUrl: withCurrentMediaToken(a.thumbUrl, mediaToken),
+  })), [given, mediaToken]);
   const [lightbox, setLightbox] = useState(null); // { media, initialIndex } or null
   const urls = useMemo(() => urlsFromAttachments(attachments), [attachments]);
   const { statMap, refresh: refreshStat } = useBatchExists(urls);
 
   if (!attachments || attachments.length === 0) return null;
   // Per-att helper: resolves the batched stat (or treats non-project URLs as exists).
-  const statFor = (att) => statMap[att.resolvedUrl] || (parseFileUrl(att.resolvedUrl) ? null : { exists: true });
+  const statFor = (att) => statMap[stripAuthParams(att.resolvedUrl)] || (parseFileUrl(att.resolvedUrl) ? null : { exists: true });
 
   // Split into media (inline) vs doc/file (groupable)
   const mediaAtts = [];

@@ -34,6 +34,7 @@ import {
   deleteBookmark,
   fetchProjectBookmarks,
   clog,
+  authedFetch,
 } from "../lib/api";
 import ProjectFileModal from "../components/ProjectFileModal";
 import FloatingTaskCard from "../components/FloatingTaskCard";
@@ -43,6 +44,7 @@ const TerminalOverlay = lazy(() => import("../components/TerminalOverlay"));
 import { relativeTime, renderMarkdown, extractFileAttachments, stripAttachmentTags } from "../lib/formatters";
 import { serverNow } from "../lib/serverTime";
 import { uploadUrl } from "../lib/urls";
+import { draftAttachmentForCache, restoreDraftAttachment } from "../lib/draftAttachments";
 import { forwardState, resolveBack } from "../lib/nav";
 import { getEinkMode } from "../lib/einkMode";
 
@@ -1926,6 +1928,10 @@ import SkillPickerPanel from "../components/SkillPickerPanel";
 
 // --- Chat Input ---
 
+// Draft chip preview for a restored upload (/api/uploads/<name> also finds
+// project-scoped uploads).
+const draftUploadUrl = (uploadedPath) => uploadUrl(uploadedPath.split("/").pop());
+
 function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledReason, isBusy, tmuxMode, onEscape, escapeUrgent, escapeAvailable = true, escapeDisabled = false, scrollButton, kbOpen = false, editingMessage, onEditSave, onEditCancel }) {
   const [text, setText] = useDraft(agentId ? `chat:${agentId}` : null, "");
   // Edit mode: a queued/scheduled message's content is loaded here instead
@@ -1963,12 +1969,7 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
     try {
       const cached = localStorage.getItem(attachmentCacheKey);
       if (cached) {
-        return JSON.parse(cached).map((a) => ({
-          ...a,
-          uploading: false,
-          file: null,
-          previewUrl: a.thumbnailUrl || null,
-        }));
+        return JSON.parse(cached).map((a) => restoreDraftAttachment(a, draftUploadUrl));
       }
     } catch { /* ignore */ }
     return [];
@@ -2059,12 +2060,7 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
       try {
         const cached = localStorage.getItem(attachmentCacheKey);
         if (cached) {
-          return JSON.parse(cached).map((a) => ({
-            ...a,
-            uploading: false,
-            file: null,
-            previewUrl: a.thumbnailUrl || null,
-          }));
+          return JSON.parse(cached).map((a) => restoreDraftAttachment(a, draftUploadUrl));
         }
       } catch { /* ignore */ }
       return [];
@@ -2089,18 +2085,8 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
     if (lastAttachmentKeyRef.current !== attachmentCacheKey) return;
     const completed = attachments.filter((a) => !a.uploading && a.uploadedPath);
     if (completed.length > 0) {
-      const toCache = completed.map((a) => ({
-        id: a.id,
-        uploadedPath: a.uploadedPath,
-        originalName: a.originalName,
-        size: a.size,
-        mimeType: a.mimeType || a.file?.type || null,
-        thumbnailUrl: a.thumbnailUrl || (
-          (a.mimeType || a.file?.type || "").startsWith("image/")
-            ? uploadUrl(a.uploadedPath.split("/").pop())
-            : null
-        ),
-      }));
+      // Path + metadata only: the preview URL (media token) is rebuilt on restore.
+      const toCache = completed.map(draftAttachmentForCache);
       try { safeSetItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* ignore */ }
     } else {
       try { localStorage.removeItem(attachmentCacheKey); } catch { /* ignore */ }
@@ -3496,7 +3482,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
     const kbFlush = () => {
       if (!kbSamples.length) return;
       const batch = kbSamples.splice(0);
-      fetch("/api/debug/kb-log", {
+      authedFetch("/api/debug/kb-log", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ samples: batch }),
@@ -4064,7 +4050,7 @@ export default function AgentChatPage({ theme, onToggleTheme, agentId: propAgent
         domElements,
         wsEvents: wsEventLog.current.slice(),
       };
-      fetch('/api/debug/frontend-state', {
+      authedFetch('/api/debug/frontend-state', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(snapshot),

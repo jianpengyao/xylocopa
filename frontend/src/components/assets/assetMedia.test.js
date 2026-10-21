@@ -9,6 +9,7 @@ import {
 } from "./assetMedia";
 
 const TOKEN_KEY = "cc-auth-token";
+const MEDIA_KEY = "cc-media-token";
 
 function asset(path, extra = {}) {
   const name = path.split("/").pop();
@@ -27,18 +28,26 @@ function asset(path, extra = {}) {
 }
 
 describe("tileThumbUrl", () => {
-  beforeEach(() => localStorage.removeItem(TOKEN_KEY));
-  afterEach(() => localStorage.removeItem(TOKEN_KEY));
+  const clearTokens = () => { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(MEDIA_KEY); };
+  beforeEach(clearTokens);
+  afterEach(clearTokens);
 
   it("asks for the 320px variant with an mtime cache-bust", () => {
     const url = tileThumbUrl("proj", asset("out/a b.png"));
     expect(url).toBe("/api/thumbs/proj/out/a%20b.png?tile=1&_v=1700000000.5");
   });
 
-  it("keeps the auth token intact", () => {
-    localStorage.setItem(TOKEN_KEY, "tok");
+  // Media URLs carry the media token (auth step 3), never the session token.
+  it("keeps the media token intact", () => {
+    localStorage.setItem(MEDIA_KEY, JSON.stringify({ token: "tok", exp: Date.now() / 1000 + 3600 }));
     const url = tileThumbUrl("proj", asset("out/a.png"));
     expect(url).toBe("/api/thumbs/proj/out/a.png?token=tok&tile=1&_v=1700000000.5");
+  });
+
+  it("never puts the session token in the URL", () => {
+    localStorage.setItem(TOKEN_KEY, "xys_session");
+    const url = tileThumbUrl("proj", asset("out/a.png"));
+    expect(url).toBe("/api/thumbs/proj/out/a.png?tile=1&_v=1700000000.5");
   });
 
   it("uses the file itself for svg", () => {

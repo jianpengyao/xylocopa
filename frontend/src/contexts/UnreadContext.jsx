@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { fetchUnreadList, getAuthToken } from "../lib/api";
+import { fetchUnreadList } from "../lib/api";
 import { useWebSocketContext } from "./WebSocketContext";
 
 const UnreadContext = createContext(null);
@@ -23,8 +23,9 @@ export function UnreadProvider({ children }) {
 
   // HTTP resync: pull the authoritative list and replace local state.
   // Used on mount and on WS (re)connect to catch anything we missed.
+  // No "token stored" gate: this provider renders only inside AuthGuard,
+  // and under DISABLE_AUTH no token is ever stored.
   const resync = useCallback(async (reason) => {
-    if (!getAuthToken()) return;
     try {
       const r = await fetchUnreadList();
       const agents = r.agents || [];
@@ -47,11 +48,10 @@ export function UnreadProvider({ children }) {
     }
   }, []);
 
-  // Initial seed on mount (and whenever auth token appears).
+  // Initial seed on mount.
   const seededRef = useRef(false);
   useEffect(() => {
     if (seededRef.current) return;
-    if (!getAuthToken()) return;
     seededRef.current = true;
     resync("seed");
   }, [resync]);

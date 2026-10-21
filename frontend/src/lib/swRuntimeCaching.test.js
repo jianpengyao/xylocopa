@@ -68,4 +68,46 @@ describe("service worker runtimeCaching routes", () => {
     expect(runtimeCaching.filter((r) => matches(r, emoji, { url: emoji.href, mode: "cors", method: "GET" }))
       .map((r) => r.options.cacheName)).toEqual(["fluent-emoji-cache"]);
   });
+
+  it("matches legacy .thumb.jpg posters that carry a query (media token, cache-bust)", () => {
+    for (const path of [
+      "/api/files/proj/v/clip.mp4.thumb.jpg?token=x",
+      "/api/files/proj/v/clip.mp4.thumb.jpg?_v=1&token=x",
+      "/api/uploads/clip.mp4.thumb.jpg?token=x",
+    ]) {
+      expect(matchingRoutes(path, "cors").map((r) => r.options.cacheName), path).toEqual(["thumbnail-cache"]);
+    }
+    // Still anchored on the extension: a name merely containing it is not a thumb.
+    expect(matchingRoutes("/api/files/proj/a.thumb.jpgx", "cors")).toEqual([]);
+  });
+
+  it("keys thumbnail caches without the media token or ws ticket", async () => {
+    const thumbRoutes = runtimeCaching.filter((r) => r.options.cacheName === "thumbnail-cache");
+    expect(thumbRoutes).toHaveLength(2);
+    for (const route of thumbRoutes) {
+      const plugins = route.options.plugins || [];
+      const keyers = plugins.filter((p) => typeof p.cacheKeyWillBeUsed === "function");
+      expect(keyers).toHaveLength(1);
+      const key = (path) => keyers[0].cacheKeyWillBeUsed({ request: { url: new URL(path, ORIGIN).href }, mode: "read" });
+      expect(await key("/api/thumbs/proj/a.png?token=abc.def&tile=1&_v=1700000000.5"))
+        .toBe(`${ORIGIN}/api/thumbs/proj/a.png?tile=1&_v=1700000000.5`);
+      expect(await key("/api/files/proj/v.mp4.thumb.jpg?ticket=xyt_1&token=t")).toBe(`${ORIGIN}/api/files/proj/v.mp4.thumb.jpg`);
+      // Two token generations map to one cache entry.
+      expect(await key("/api/thumbs/p/x.png?token=old&_v=2")).toBe(await key("/api/thumbs/p/x.png?_v=2&token=new"));
+    }
+  });
+
+  it("keeps the cache-key plugin self-contained (workbox-build serializes its source)", () => {
+    for (const route of runtimeCaching) {
+      for (const plugin of route.options.plugins || []) {
+        for (const fn of Object.values(plugin)) {
+          const src = String(fn);
+          // Runs in sw.js with no module scope: only globals and its argument.
+          expect(src).not.toMatch(/\bimport\b|\brequire\(/);
+          expect(src).not.toContain("//");
+          expect(new Function(`return (${src})`)()).toBeTypeOf("function");
+        }
+      }
+    }
+  });
 });

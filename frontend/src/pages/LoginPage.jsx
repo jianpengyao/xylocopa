@@ -1,10 +1,51 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { authCheck, authLogin, authSetPassword, setAuthToken } from "../lib/api";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import {
+  AuthTimeoutError,
+  authCheck,
+  authLogin,
+  authSetPassword,
+  deviceLabel,
+  getAuthLockReason,
+  setAuthSession,
+  withTimeout,
+} from "../lib/api";
 import beeLogo from "../assets/xylocopa-bee.svg";
+
+// Same minimum as the server (set-password / change-password).
+const MIN_PASSWORD_LENGTH = 8;
+const CHECK_TIMEOUT_MS = 8000;
+
+function formatMinutes(minutes) {
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60} h`;
+  return `${minutes} min`;
+}
+
+// Why the app is on the lock screen. `reason` comes from the redirect
+// (auth-expired / auth check / another tab) or, after a reload, from the
+// server's check.
+function lockedSubtitle(reason, idleMinutes) {
+  switch (reason) {
+    case "idle":
+      return idleMinutes > 0
+        ? `Locked after ${formatMinutes(idleMinutes)} of inactivity`
+        : "Locked after inactivity";
+    case "revoked":
+      return "Signed out from another device";
+    case "expired":
+      return "Session expired";
+    case "signed-out-elsewhere":
+      return "Signed out in another tab";
+    case "signed-out":
+      return "Signed out";
+    default:
+      return "Locked";
+  }
+}
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -12,19 +53,48 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [shake, setShake] = useState(false);
+  // The mount check did not answer in time: the form stays usable, with a
+  // Retry for the check.
+  const [checkSlow, setCheckSlow] = useState(false);
+  const [checkReason, setCheckReason] = useState(null);
+  const [idleMinutes, setIdleMinutes] = useState(null);
+  const navigateRef = useRef(navigate);
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
+  const checkCtlRef = useRef(null);
+
+  // Already signed in (or auth is off)? Then leave. Otherwise learn whether
+  // this is first-run setup and why the session ended. Abandoned after
+  // CHECK_TIMEOUT_MS; Retry aborts the check in flight and starts another.
+  const runCheck = useCallback(() => {
+    checkCtlRef.current?.abort();
+    const ctl = new AbortController();
+    checkCtlRef.current = ctl;
+    setCheckSlow(false);
+    withTimeout((signal) => authCheck({ signal }), CHECK_TIMEOUT_MS, { signal: ctl.signal })
+      .then((r) => {
+        if (ctl.signal.aborted) return;
+        if (r.authenticated) {
+          navigateRef.current("/", { replace: true });
+          return;
+        }
+        setNeedsSetup(!!r.needs_setup);
+        setCheckReason(r.reason || null);
+        if (typeof r.idle_timeout_minutes === "number") setIdleMinutes(r.idle_timeout_minutes);
+      })
+      .catch((err) => {
+        if (ctl.signal.aborted) return;
+        if (err instanceof AuthTimeoutError) setCheckSlow(true);
+        else console.error("authCheck failed:", err);
+      })
+      .finally(() => { if (!ctl.signal.aborted) setLoading(false); });
+  }, []);
 
   useEffect(() => {
-    authCheck()
-      .then((r) => {
-        if (r.authenticated) {
-          navigate("/", { replace: true });
-        } else if (r.needs_setup) {
-          setNeedsSetup(true);
-        }
-      })
-      .catch((err) => console.error('authCheck failed:', err))
-      .finally(() => setLoading(false));
-  }, []);
+    runCheck();
+    return () => { checkCtlRef.current?.abort(); };
+  }, [runCheck]);
+
+  const reason = location.state?.reason || checkReason || getAuthLockReason();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -36,8 +106,8 @@ export default function LoginPage() {
         triggerShake();
         return;
       }
-      if (password.length < 4) {
-        setError("Password must be at least 4 characters");
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
         triggerShake();
         return;
       }
@@ -45,10 +115,11 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
+      const label = deviceLabel();
       const res = needsSetup
-        ? await authSetPassword(password)
-        : await authLogin(password);
-      setAuthToken(res.token);
+        ? await authSetPassword(password, { deviceLabel: label })
+        : await authLogin(password, { deviceLabel: label });
+      setAuthSession(res);
       navigate("/", { replace: true });
     } catch (err) {
       setError(err.message || "Login failed");
@@ -102,8 +173,16 @@ export default function LoginPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-base font-semibold text-heading leading-tight">Xylocopa</h1>
             <p className="text-xs text-dim mb-3">
-              {needsSetup ? "Set a password to get started" : "Locked"}
+              {needsSetup ? "Set a password to get started" : lockedSubtitle(reason, idleMinutes)}
             </p>
+            {checkSlow && (
+              <p className="text-xs text-dim mb-2">
+                Server is slow to respond.{" "}
+                <button type="button" onClick={runCheck} className="text-accent hover:underline">
+                  Retry
+                </button>
+              </p>
+            )}
 
             <form onSubmit={handleSubmit} autoComplete="on" className="space-y-2">
               {/* Hidden username for iOS autofill credential matching */}

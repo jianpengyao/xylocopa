@@ -8,6 +8,7 @@ import { useMonitor } from "../contexts/MonitorContext";
 import { getEinkMode, setEinkMode } from "../lib/einkMode";
 import { getOrbEnabled, setOrbEnabled } from "../lib/orbMode";
 import ThemeSettings from "../components/ThemeSettings";
+import SecuritySettings from "../components/SecuritySettings";
 
 
 const HEALTH_COLORS = {
@@ -415,6 +416,8 @@ export default function MonitorPage({ theme, onToggleTheme }) {
         {/* Storage */}
         <StorageChart data={storageStats} onRefresh={refresh} />
 
+        {/* Security: idle lock, signed-in devices, password, sign out */}
+        <SecuritySettings />
 
         {/* Display: theme palettes + custom editor */}
         <ThemeSettings theme={theme} />

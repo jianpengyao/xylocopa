@@ -10,6 +10,12 @@
  *
  * Mobile: a key bar (Esc/Tab/sticky-Ctrl/arrows) covers what soft keyboards
  * lack; visualViewport resize shrinks the overlay above the keyboard.
+ *
+ * Auth: with auth on, each connect trades the session for a one-time ticket
+ * (POST /api/auth/ws-ticket) and opens ?ticket=…. A 4001 close with
+ * expired / revoked / idle ends the session: no retries, api.js's expiry
+ * flow takes the app to /login. 4001 missing / invalid retries like a drop
+ * (at most 3 times until a server frame arrives).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -17,8 +23,12 @@ import { ArrowLeft, RotateCw } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { getAuthToken } from "../lib/api";
+import { AuthError, expireSession, fetchWsTicket, getAuthToken, withTimeout } from "../lib/api";
+import { WS_AUTH_CLOSE_CODE, WS_HANDSHAKE_TIMEOUT_MS, wsSessionEndReason } from "../lib/reconnect";
 import { getTerminalTheme, THEME_EVENT } from "../lib/themes";
+import { useAuth } from "../contexts/AuthContext";
+
+const SESSION_ENDED_MSG = "Session locked — sign in again";
 
 const TOUCH_DEVICE =
   typeof window !== "undefined" &&
@@ -44,6 +54,10 @@ const KEYS = [
 ];
 
 export default function TerminalOverlay({ agentId, agentName, onClose }) {
+  const { authReady, authDisabled, refresh: refreshAuth } = useAuth();
+  const useTicket = authReady && !authDisabled;
+  const refreshAuthRef = useRef(refreshAuth);
+  refreshAuthRef.current = refreshAuth;
   const rootRef = useRef(null);
   const mountRef = useRef(null);
   const termRef = useRef(null);
@@ -58,6 +72,11 @@ export default function TerminalOverlay({ agentId, agentName, onClose }) {
   const reconnectTimerRef = useRef(null);
   const pendingVisRef = useRef(false);
   const serverEndedRef = useRef(false);
+  // Ticket fetch bookkeeping: the in-flight flag keeps the visibility
+  // handler from starting a second connect; the generation drops the result
+  // of a fetch that a newer connect (or unmount) superseded.
+  const ticketInFlightRef = useRef(false);
+  const connectGenRef = useRef(0);
   const [status, setStatus] = useState("connecting");
   const [errMsg, setErrMsg] = useState("");
   const [ctrlArmed, setCtrlArmed] = useState(false);
@@ -100,27 +119,58 @@ export default function TerminalOverlay({ agentId, agentName, onClose }) {
     }
   }, []);
 
-  const connect = useCallback(() => {
+  // A dropped socket (or a failed ticket fetch): re-attach silently, up to
+  // 3 times; while backgrounded, the moment the page is visible again.
+  const retryAfterDrop = useCallback(() => {
+    if (unmountedRef.current || serverEndedRef.current) return;
+    if (document.hidden) {
+      // Backgrounded — reconnect the moment we're visible again
+      pendingVisRef.current = true;
+      setStatus("disconnected");
+      return;
+    }
+    if (retriesRef.current < 3) {
+      retriesRef.current += 1;
+      setStatus("connecting");
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        if (!unmountedRef.current) reconnectRef.current?.();
+      }, 800 * retriesRef.current);
+    } else {
+      setStatus("disconnected");
+    }
+  }, []);
+
+  // The server ended the session: no retries. api.js's expiry flow
+  // (auth-expired) takes the app to /login.
+  const endSession = useCallback(() => {
+    serverEndedRef.current = true;
+    setStatus("error");
+    setErrMsg(SESSION_ENDED_MSG);
+  }, []);
+
+  // `sessionToken`: the stored session the ticket was minted for, so a
+  // session-ending close never expires a newer login from another tab.
+  const openSocket = useCallback((ticket, sessionToken) => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const token = getAuthToken();
     const url =
       `${proto}//${window.location.host}/ws/terminal/${encodeURIComponent(agentId)}` +
-      (token ? `?token=${encodeURIComponent(token)}` : "");
-    setStatus("connecting");
-    setErrMsg("");
-    serverEndedRef.current = false;
+      (ticket ? `?ticket=${encodeURIComponent(ticket)}` : "");
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
     ws.onopen = () => {
-      retriesRef.current = 0;
       pendingVisRef.current = false;
       setStatus("connected");
       doFit();
       termRef.current?.focus();
     };
     ws.onmessage = (ev) => {
+      // Only a frame proves the attach: the server accepts before its auth
+      // check (4001) and before a store error (1011), so resetting the
+      // retries on open would loop forever on a persistent failure.
+      retriesRef.current = 0;
       if (typeof ev.data === "string") {
         let m;
         try {
@@ -140,26 +190,65 @@ export default function TerminalOverlay({ agentId, agentName, onClose }) {
       }
       termRef.current?.write(new Uint8Array(ev.data));
     };
-    ws.onclose = () => {
-      if (unmountedRef.current || serverEndedRef.current) return;
-      if (document.hidden) {
-        // Backgrounded — reconnect the moment we're visible again
-        pendingVisRef.current = true;
-        setStatus("disconnected");
-        return;
+    ws.onclose = (ev) => {
+      // A superseded socket closing late must not start another retry.
+      if (unmountedRef.current || serverEndedRef.current || wsRef.current !== ws) return;
+      const endReason = wsSessionEndReason(ev);
+      if (endReason) {
+        const current = getAuthToken();
+        if (!(sessionToken && current && current !== sessionToken)) {
+          endSession();
+          expireSession(endReason, { requestToken: sessionToken, source: "ws-terminal" }).catch(() => {});
+          return;
+        }
+        // That session was already replaced by a newer login: retry with it.
       }
-      if (retriesRef.current < 3) {
-        retriesRef.current += 1;
-        setStatus("connecting");
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = setTimeout(() => {
-          if (!unmountedRef.current) reconnectRef.current?.();
-        }, 800 * retriesRef.current);
-      } else {
-        setStatus("disconnected");
+      // Opened without a ticket, yet the server wants one (DISABLE_AUTH was
+      // flipped off under this tab): re-run the auth check; once AuthGuard
+      // knows auth is on, this overlay reconnects with a ticket.
+      if (!ticket && ev?.code === WS_AUTH_CLOSE_CODE) {
+        Promise.resolve().then(() => refreshAuthRef.current?.()).catch(() => {});
       }
+      retryAfterDrop();
     };
-  }, [agentId, doFit]);
+  }, [agentId, doFit, endSession, retryAfterDrop]);
+
+  const connect = useCallback(() => {
+    clearTimeout(reconnectTimerRef.current); // this connect supersedes a queued retry
+    setStatus("connecting");
+    setErrMsg("");
+    serverEndedRef.current = false;
+    // The old socket (if any) was closed by reconnect(); its late onclose
+    // is ignored from here on.
+    wsRef.current = null;
+    const sessionToken = getAuthToken();
+    const gen = ++connectGenRef.current;
+    if (!useTicket) {
+      ticketInFlightRef.current = false;
+      openSocket(null, sessionToken);
+      return;
+    }
+    ticketInFlightRef.current = true;
+    withTimeout((signal) => fetchWsTicket({ signal }), WS_HANDSHAKE_TIMEOUT_MS).then(
+      (r) => {
+        if (gen !== connectGenRef.current || unmountedRef.current) return;
+        ticketInFlightRef.current = false;
+        openSocket(r?.ticket || null, sessionToken);
+      },
+      (err) => {
+        if (gen !== connectGenRef.current || unmountedRef.current) return;
+        ticketInFlightRef.current = false;
+        if (err instanceof AuthError) {
+          const current = getAuthToken();
+          // api.js already ran the expiry flow — unless a newer login won.
+          if (current && current !== sessionToken) retryAfterDrop();
+          else endSession();
+          return;
+        }
+        retryAfterDrop();
+      },
+    );
+  }, [useTicket, openSocket, endSession, retryAfterDrop]);
 
   const reconnect = useCallback(() => {
     try {
@@ -249,6 +338,7 @@ export default function TerminalOverlay({ agentId, agentName, onClose }) {
     // immediately instead of showing a stale screen + manual button.
     const onVis = () => {
       if (document.hidden || unmountedRef.current || serverEndedRef.current) return;
+      if (ticketInFlightRef.current) return; // its socket follows
       const w = wsRef.current;
       const dead =
         pendingVisRef.current ||

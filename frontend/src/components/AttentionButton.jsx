@@ -4,7 +4,7 @@ import DraggableFab from "./DraggableFab";
 import AttentionOrb from "./AttentionOrb";
 import { useUnread } from "../contexts/UnreadContext";
 import { useWebSocketContext } from "../contexts/WebSocketContext";
-import { fetchAttentionJobs, getAuthToken } from "../lib/api";
+import { fetchAttentionJobs } from "../lib/api";
 import { loadTranscript, makeMsg, saveTranscript } from "./attention/chatStore";
 import { getCharacter, subscribeCharacter } from "./attention/characterStore";
 import { forwardState } from "../lib/nav";
@@ -150,8 +150,9 @@ function OrbAttentionButton() {
   useEffect(() => {
     if (hidden || open) return undefined;
     let alive = true;
+    // Rendered only inside AuthGuard: no "token stored" gate (none is stored
+    // under DISABLE_AUTH).
     const poll = () => {
-      if (!getAuthToken()) return;
       fetchAttentionJobs()
         .then((r) => {
           if (!alive) return;

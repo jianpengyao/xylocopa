@@ -24,6 +24,21 @@
 //
 // Only cacheable, non-critical image assets are routed here. A failure in
 // one of these routes breaks a single <img>, never the page or an API call.
+//
+// Thumbnail URLs carry a rotating media token (?token=). The cache key drops
+// it (and any ws ticket), so a token refresh reuses the cached entry and no
+// credential lands in Cache Storage keys. `_v` / `tile` stay in the key.
+// workbox-build serializes this plugin's source into sw.js, so it must stay
+// self-contained: no imports, no references to module variables.
+const thumbnailCacheKeyPlugin = {
+  cacheKeyWillBeUsed: async ({ request }) => {
+    const u = new URL(request.url);
+    u.searchParams.delete('token');
+    u.searchParams.delete('ticket');
+    return u.href;
+  },
+};
+
 export const runtimeCaching = [
   // Fluent UI emoji SVGs from jsdelivr — immutable assets, cache forever
   {
@@ -35,13 +50,15 @@ export const runtimeCaching = [
       cacheableResponse: { statuses: [0, 200] },
     },
   },
-  // Thumbnails — cached aggressively (small files, rarely change)
+  // Thumbnails — cached aggressively (small files, rarely change). The
+  // pattern allows a query: legacy video posters are `….mp4.thumb.jpg?token=…`.
   {
-    urlPattern: /\.thumb\.jpg$/,
+    urlPattern: /\.thumb\.jpg(?:\?|$)/,
     handler: 'CacheFirst',
     options: {
       cacheName: 'thumbnail-cache',
       expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
+      plugins: [thumbnailCacheKeyPlugin],
     },
   },
   // Image thumbnails — cached aggressively (small JPEG, rarely change)
@@ -51,6 +68,7 @@ export const runtimeCaching = [
     options: {
       cacheName: 'thumbnail-cache',
       expiration: { maxEntries: 500, maxAgeSeconds: 7 * 24 * 60 * 60 },
+      plugins: [thumbnailCacheKeyPlugin],
     },
   },
 ]

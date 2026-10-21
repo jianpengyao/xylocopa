@@ -11,6 +11,7 @@ import useDraft from "../hooks/useDraft";
 import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
 import { attachmentUrl } from "../lib/urls";
+import { draftAttachmentForCache, restoreDraftAttachment } from "../lib/draftAttachments";
 
 function deriveTitle(description) {
   if (!description) return "";
@@ -224,9 +225,7 @@ export default function NewTaskPage({ embedded = false, onClose, contextPath }) 
     try {
       const cached = localStorage.getItem(attachmentCacheKey);
       if (cached) {
-        return JSON.parse(cached).map((a) => ({
-          ...a, uploading: false, file: null, previewUrl: a.thumbnailUrl || null,
-        }));
+        return JSON.parse(cached).map((a) => restoreDraftAttachment(a, attachmentUrl));
       }
     } catch { /* corrupt cache */ }
     return [];
@@ -267,11 +266,8 @@ export default function NewTaskPage({ embedded = false, onClose, contextPath }) 
   useEffect(() => {
     const completed = attachments.filter((a) => !a.uploading && a.uploadedPath);
     if (completed.length > 0) {
-      const toCache = completed.map((a) => ({
-        id: a.id, uploadedPath: a.uploadedPath, originalName: a.originalName,
-        size: a.size, mimeType: a.mimeType || null,
-        thumbnailUrl: (a.mimeType || "").startsWith("image/") ? attachmentUrl(a.uploadedPath) : null,
-      }));
+      // Path + metadata only: the preview URL (media token) is rebuilt on restore.
+      const toCache = completed.map(draftAttachmentForCache);
       try { localStorage.setItem(attachmentCacheKey, JSON.stringify(toCache)); } catch { /* quota */ }
     } else {
       try { localStorage.removeItem(attachmentCacheKey); } catch { /* unavailable */ }

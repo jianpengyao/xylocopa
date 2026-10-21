@@ -59,3 +59,17 @@ export const WS_PONG_TIMEOUT_MS = 10000;
 export const WS_HANDSHAKE_TIMEOUT_MS = 10000;
 export const WS_INITIAL_RECONNECT_MS = 1000;
 export const WS_MAX_RECONNECT_MS = 30000;
+
+// WebSocket auth close (orchestrator/ws_auth.py): code 4001 with the reason
+// as close reason. Only expired / revoked / idle end the session; missing /
+// invalid (no ticket, or a spent or stale one) mean "fetch a fresh ticket and
+// reconnect". 1011 "Auth store unavailable" is an ordinary drop.
+export const WS_AUTH_CLOSE_CODE = 4001;
+const WS_SESSION_END_REASONS = new Set(["expired", "revoked", "idle"]);
+
+/** The session-ending reason carried by a WebSocket close event, or null. */
+export function wsSessionEndReason(ev) {
+  return ev?.code === WS_AUTH_CLOSE_CODE && WS_SESSION_END_REASONS.has(ev.reason)
+    ? ev.reason
+    : null;
+}

@@ -1,17 +1,32 @@
 /** Centralized API wrapper for Xylocopa. */
 
-import { calibrate } from "./serverTime";
+import { calibrate, serverNow } from "./serverTime";
+import { isUserActive } from "./activity";
 
 const BASE = "";
-const TOKEN_KEY = "cc-auth-token";
+// Opaque server session token (`xys_…`). Travels only as a Bearer header —
+// never in a URL.
+export const AUTH_TOKEN_KEY = "cc-auth-token";
+const TOKEN_KEY = AUTH_TOKEN_KEY;
 const LOGIN_TS_KEY = "cc-login-ts";
+// Media token, JSON {token, exp}: a session-bound `scope=media` JWT that the
+// server accepts as ?token= on GET/HEAD of /api/files, /api/thumbs and
+// /api/uploads only (<img>, <video>, downloads). `exp` is epoch seconds.
+export const MEDIA_TOKEN_KEY = "cc-media-token";
+// Set (to the reason, "idle") while the stored session is locked by the
+// server's idle timeout. The token is kept: logging in with it as Bearer
+// retires the locked session instead of leaving it in the device list.
+export const AUTH_LOCKED_KEY = "cc-auth-locked";
 
-// Timestamp of the most recent setAuthToken() call — used to protect the fresh
-// token from being nuked by stale callbacks during the first few seconds after
-// login (e.g. idle-lock visibilitychange handlers racing with React renders).
+// Timestamp of the most recent setAuthSession() call — used to protect the
+// fresh token from being nuked by stale callbacks during the first few seconds
+// after login (e.g. in-flight 401s racing with React renders).
 // Persisted in localStorage so the grace period survives iOS PWA page reloads.
 let _lastLoginTs = Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
 const _LOGIN_GRACE_MS = 3000; // 3-second grace window after login
+// A media token this close to its expiry is treated as gone, so a URL built
+// now does not die before the browser fetches it.
+const _MEDIA_EXPIRY_MARGIN_MS = 30 * 1000;
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -22,24 +37,118 @@ export function getLoginTs() {
   return _lastLoginTs || Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
 }
 
+/** Store a bare session token (no media token). Prefer setAuthSession(). */
 export function setAuthToken(token) {
-  _lastLoginTs = Date.now();
-  localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(LOGIN_TS_KEY, String(_lastLoginTs));
+  setAuthSession({ token });
 }
 
 /**
- * Clear the auth token.  Returns true if the token was actually removed,
- * false if the call was blocked by the post-login grace window.
+ * Store a LoginResponse (login, set-password, change-password): the session
+ * token, its media token and the login timestamp, and drop any idle-lock flag.
+ * The token is written last so other tabs (useAuthSync) see a complete
+ * session when its storage event arrives.
  */
-export function clearAuthToken(reason) {
+export function setAuthSession(resp) {
+  if (!resp?.token) return;
+  _lastLoginTs = Date.now();
+  localStorage.setItem(LOGIN_TS_KEY, String(_lastLoginTs));
+  setMediaToken(resp.media_token || null, resp.media_expires_at ?? null);
+  localStorage.removeItem(AUTH_LOCKED_KEY);
+  localStorage.setItem(TOKEN_KEY, resp.token);
+}
+
+// getMediaToken() runs while rendering every media URL; re-parse only when
+// the stored value changes.
+let _mediaRaw = null;
+let _mediaParsed = null;
+
+function _readMedia() {
+  let raw;
+  try { raw = localStorage.getItem(MEDIA_TOKEN_KEY); } catch { return null; }
+  if (!raw) return null;
+  if (raw !== _mediaRaw) {
+    _mediaRaw = raw;
+    try { _mediaParsed = JSON.parse(raw); } catch { _mediaParsed = null; }
+  }
+  return _mediaParsed?.token ? _mediaParsed : null;
+}
+
+/** The stored media token, or null when missing or (about to be) expired. */
+export function getMediaToken() {
+  const m = _readMedia();
+  if (!m) return null;
+  if (typeof m.exp === "number" && m.exp * 1000 - serverNow() <= _MEDIA_EXPIRY_MARGIN_MS) return null;
+  return m.token;
+}
+
+/** Expiry (epoch seconds) of the stored media token, or null. */
+export function getMediaTokenExp() {
+  const m = _readMedia();
+  return typeof m?.exp === "number" ? m.exp : null;
+}
+
+// Fired on window after setMediaToken() stores or drops the media token.
+export const MEDIA_TOKEN_EVENT = "media-token-changed";
+
+/** Store (or, with a falsy token, remove) the media token. */
+export function setMediaToken(token, exp) {
+  try {
+    if (!token) localStorage.removeItem(MEDIA_TOKEN_KEY);
+    else localStorage.setItem(MEDIA_TOKEN_KEY, JSON.stringify({ token, exp: typeof exp === "number" ? exp : null }));
+  } catch { /* storage unavailable: media URLs go out without a token */ }
+  window.dispatchEvent(new Event(MEDIA_TOKEN_EVENT));
+}
+
+/**
+ * Call `cb` when the media token changes, in this tab (setMediaToken) or
+ * another (storage event). Returns an unsubscribe function.
+ */
+export function subscribeMediaToken(cb) {
+  const onStorage = (e) => {
+    if (e.key === MEDIA_TOKEN_KEY || e.key === null) cb();
+  };
+  window.addEventListener(MEDIA_TOKEN_EVENT, cb);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(MEDIA_TOKEN_EVENT, cb);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+/** Reason the stored session is locked ("idle"), or null. */
+export function getAuthLockReason() {
+  try { return localStorage.getItem(AUTH_LOCKED_KEY) || null; } catch { return null; }
+}
+
+/**
+ * Mark the stored session as locked without dropping its token (the server
+ * answered `idle`). Returns false when there is no token to lock.
+ */
+export function lockAuthSession(reason = "idle") {
+  if (!getAuthToken()) return false;
+  try { localStorage.setItem(AUTH_LOCKED_KEY, reason); } catch { /* storage unavailable */ }
+  return true;
+}
+
+/** Drop a stale lock flag (the server accepts the session again). */
+export function clearAuthLock() {
+  try { localStorage.removeItem(AUTH_LOCKED_KEY); } catch { /* storage unavailable */ }
+}
+
+/**
+ * Clear the auth token (and its media token and lock flag).  Returns true if
+ * the token was actually removed, false if the call was blocked by the
+ * post-login grace window. `force`: the user signed this device out on
+ * purpose — no grace window applies.
+ */
+export function clearAuthToken(reason, { force = false } = {}) {
   // During the post-login grace window, refuse to clear the token.
   // This prevents stale visibilitychange handlers, frozen timers, and
   // in-flight 401 responses from racing with a fresh login.
   // Check both in-memory AND persisted timestamp (survives iOS PWA reloads).
   const loginTs = _lastLoginTs || Number(localStorage.getItem(LOGIN_TS_KEY) || 0);
   const sinceLogin = Date.now() - loginTs;
-  if (loginTs && sinceLogin < _LOGIN_GRACE_MS) {
+  if (!force && loginTs && sinceLogin < _LOGIN_GRACE_MS) {
     console.warn("[auth] clearAuthToken BLOCKED during login grace period (%dms since login, reason=%s)", sinceLogin, reason || "unknown");
     _sendAuthDiag("clear_blocked", reason || "unknown", sinceLogin);
     return false;
@@ -48,6 +157,8 @@ export function clearAuthToken(reason) {
   _sendAuthDiag("clear", reason || "unknown", sinceLogin);
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(LOGIN_TS_KEY);
+  localStorage.removeItem(MEDIA_TOKEN_KEY);
+  localStorage.removeItem(AUTH_LOCKED_KEY);
   _lastLoginTs = 0;
   return true;
 }
@@ -79,22 +190,101 @@ export async function authedFetch(url, opts = {}) {
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  if (isUserActive()) headers["X-User-Activity"] = "1";
   return fetch(`${BASE}${url}`, { ...opts, headers });
 }
 
-/** Handle 401 by clearing auth and emitting event. */
-function handle401(requestToken) {
-  // If the token changed since this request was sent (e.g. user re-logged in
-  // while this stale request was in-flight), don't nuke the fresh token.
-  const currentToken = getAuthToken();
-  if (currentToken && currentToken !== requestToken) {
-    throw new Error("Not authenticated");
+/**
+ * The session failed (a 401 carrying X-Auth-Reason, or a WebSocket 4001).
+ * Message is kept as "Not authenticated": the global error toast (main.jsx)
+ * skips it, and callers that print err.message show the same text as before.
+ */
+export class AuthError extends Error {
+  constructor(reason) {
+    super("Not authenticated");
+    this.name = "AuthError";
+    this.reason = reason || null;
   }
-  clearAuthToken("handle401");
-  if (window.location.pathname !== "/login") {
-    window.dispatchEvent(new Event("auth-expired"));
+}
+
+/** withTimeout() gave up: the server did not answer in time. */
+export class AuthTimeoutError extends Error {
+  constructor(ms) {
+    super(`No answer from the server after ${Math.round(ms / 1000)}s`);
+    this.name = "AuthTimeoutError";
   }
-  throw new Error("Not authenticated");
+}
+
+/**
+ * React to a failed session: reason ∈ missing|invalid|expired|revoked|idle.
+ *   - The stored token changed since the failing request was sent (a newer
+ *     login won the race): no-op.
+ *   - idle: keep the token (logging in with it replaces the locked session)
+ *     and flag the lock.
+ *   - otherwise: clear the token, unless the post-login grace window refuses.
+ * `auth-expired` (detail {reason}) is dispatched only when that took effect
+ * and the page is not already /login. Always rejects with an AuthError.
+ * `requestToken` omitted (WebSocket close, activity hint) means "the current
+ * token"; null means the request carried no token.
+ */
+export async function expireSession(reason, { requestToken, source } = {}) {
+  const current = getAuthToken();
+  if (requestToken !== undefined && current && current !== requestToken) {
+    throw new AuthError(reason);
+  }
+  let effective;
+  if (reason === "idle") {
+    lockAuthSession("idle");
+    effective = true;
+  } else {
+    if (source) console.warn("[auth] session failed (reason=%s, source=%s)", reason, source);
+    effective = clearAuthToken(`401:${reason}`);
+  }
+  if (effective && window.location.pathname !== "/login") {
+    window.dispatchEvent(new CustomEvent("auth-expired", { detail: { reason } }));
+  }
+  throw new AuthError(reason);
+}
+
+/**
+ * A 401 from request()/formDataRequest(). Only a 401 carrying X-Auth-Reason
+ * is a session failure (rejects via expireSession). Any other 401 — e.g. a
+ * wrong preview token — returns, and the caller throws a plain Error(detail)
+ * without logging anyone out.
+ */
+async function handle401(res, requestToken, source) {
+  const reason = res.headers?.get?.("X-Auth-Reason");
+  if (!reason) return;
+  await expireSession(reason, { requestToken, source });
+}
+
+/**
+ * Run `promiseFn(signal)` with an AbortController that fires after `ms`.
+ * Rejects with AuthTimeoutError on timeout — even if promiseFn ignores the
+ * signal — and with an AbortError when the optional outer `signal` aborts
+ * first (a Retry superseding this attempt).
+ */
+export function withTimeout(promiseFn, ms, { signal } = {}) {
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
+  const onOuterAbort = () => ctl.abort();
+  if (signal) {
+    if (signal.aborted) ctl.abort();
+    else signal.addEventListener("abort", onOuterAbort, { once: true });
+  }
+  return new Promise((resolve, reject) => {
+    const fail = (err) => reject(timedOut ? new AuthTimeoutError(ms) : err);
+    if (ctl.signal.aborted) {
+      fail(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    ctl.signal.addEventListener("abort", () => fail(new DOMException("Aborted", "AbortError")), { once: true });
+    Promise.resolve().then(() => promiseFn(ctl.signal)).then(resolve, fail);
+  }).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onOuterAbort);
+  });
 }
 
 const _API_SLOW_MS = 300;
@@ -141,19 +331,24 @@ function _logTiming(method, url, status, durMs) {
   console.log(`${tag} ${method} ${url} → ${status} ${durMs.toFixed(0)}ms`);
 }
 
+// `opts.activity`: true forces `X-User-Activity: 1`, false suppresses it;
+// left out, the header rides along only within a few seconds of a real user
+// gesture (lib/activity.js), so background polls never keep a session alive.
 async function request(url, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...opts.headers };
+  const { activity, ...fetchOpts } = opts;
+  const headers = { "Content-Type": "application/json", ...fetchOpts.headers };
   const token = getAuthToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  if (activity ?? isUserActive()) headers["X-User-Activity"] = "1";
 
-  const method = opts.method || "GET";
+  const method = fetchOpts.method || "GET";
   const t0 = performance.now();
-  const res = await fetch(`${BASE}${url}`, { ...opts, headers });
+  const res = await fetch(`${BASE}${url}`, { ...fetchOpts, headers });
   _logTiming(method, url, res.status, performance.now() - t0);
 
-  if (res.status === 401) handle401(token);
+  if (res.status === 401) await handle401(res, token, url);
 
   // Calibrate clock offset from HTTP Date header (works before WS connects)
   const serverDate = res.headers.get("Date");
@@ -165,53 +360,135 @@ async function request(url, opts = {}) {
     const msg = typeof detail === "string" ? detail
       : Array.isArray(detail) ? detail.map(e => e.msg || JSON.stringify(e)).join("; ")
       : `HTTP ${res.status}`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
 
 // --- Auth ---
-export const authCheck = () =>
-  request("/api/auth/check", { method: "POST" });
+// /api/auth/check never answers 401: {authenticated, needs_setup,
+// auth_disabled, reason, session, idle_timeout_minutes, idle_remaining_s,
+// media_token, media_expires_at, server_time}. `activity` as for request().
+export const authCheck = ({ signal, activity } = {}) =>
+  request("/api/auth/check", { method: "POST", signal, activity });
 
 /**
- * True when the server runs with DISABLE_AUTH (no password check at all), so
- * the frontend should skip its own password machinery (idle lock, login
- * redirects). Newer backends report `auth_disabled` in /api/auth/check; an
- * older backend is probed with a token-less check, which only answers
- * "authenticated" when auth is disabled.
+ * Short device name for the signed-in devices list, e.g. "iPhone · Safari",
+ * or "iPhone · Installed app" for the home-screen PWA. null when nothing is
+ * recognisable (the server then derives one from the User-Agent).
  */
-export async function resolveAuthDisabled(checkResult) {
-  if (typeof checkResult?.auth_disabled === "boolean") return checkResult.auth_disabled;
+export function deviceLabel() {
+  const nav = typeof navigator !== "undefined" ? navigator : {};
+  const ua = nav.userAgent || "";
+  let os = "";
+  if (/iPhone|iPod/.test(ua)) os = "iPhone";
+  // iPadOS 13+ Safari reports a Mac User-Agent; touch support tells them apart.
+  else if (/iPad/.test(ua) || (/Macintosh/.test(ua) && nav.maxTouchPoints > 1)) os = "iPad";
+  else if (/Android/.test(ua)) os = "Android";
+  else if (/Macintosh|Mac OS X/.test(ua)) os = "Mac";
+  else if (/Windows/.test(ua)) os = "Windows";
+  else if (/Linux|X11|CrOS/.test(ua)) os = "Linux";
+  let browser = "";
+  if (/Edg\/|EdgiOS|EdgA\//.test(ua)) browser = "Edge";
+  else if (/Firefox\/|FxiOS/.test(ua)) browser = "Firefox";
+  else if (/Chrome\/|CriOS|Chromium\//.test(ua)) browser = "Chrome";
+  else if (/Safari\//.test(ua) || (/AppleWebKit/.test(ua) && (os === "iPhone" || os === "iPad"))) browser = "Safari";
+  let standalone = false;
   try {
-    const res = await fetch(`${BASE}/api/auth/check`, { method: "POST" });
-    if (!res.ok) return false;
-    const body = await res.json();
-    return body?.authenticated === true;
-  } catch {
-    return false;
-  }
+    standalone = nav.standalone === true
+      || !!(typeof window !== "undefined" && window.matchMedia?.("(display-mode: standalone)")?.matches);
+  } catch { /* matchMedia unavailable */ }
+  if (standalone) browser = "Installed app";
+  return [os, browser].filter(Boolean).join(" · ") || null;
 }
-export const authLogin = async (password) => {
+
+function _withDeviceLabel(body, label) {
+  return label ? { ...body, device_label: label } : body;
+}
+
+/**
+ * Password login. Raw fetch: a wrong password (401 without X-Auth-Reason),
+ * 429 lockout or 415 must never trigger the session-expiry flow. The stored
+ * token (e.g. an idle-locked one) goes along as Bearer so the server retires
+ * that session ("replaced"). Resolves to a LoginResponse; callers store it
+ * with setAuthSession(). Errors carry the server `detail` and `.status`.
+ */
+export const authLogin = async (password, { deviceLabel: label } = {}) => {
+  const headers = { "Content-Type": "application/json" };
+  const prev = getAuthToken();
+  if (prev) headers["Authorization"] = `Bearer ${prev}`;
   const res = await fetch("/api/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
+    headers,
+    body: JSON.stringify(_withDeviceLabel({ password }, label)),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     const detail = body?.detail;
-    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
+    const err = new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 };
-export const authSetPassword = (password) =>
-  request("/api/auth/set-password", { method: "POST", body: JSON.stringify({ password }) });
-export const authChangePassword = (current_password, new_password) =>
-  request("/api/auth/change-password", {
+/** First-run password. Resolves to a LoginResponse (callers: setAuthSession). */
+export const authSetPassword = (password, { deviceLabel: label } = {}) =>
+  request("/api/auth/set-password", {
     method: "POST",
-    body: JSON.stringify({ current_password, new_password }),
+    body: JSON.stringify(_withDeviceLabel({ password }, label)),
   });
+/**
+ * Change the password. A wrong current password is a 403 (plain Error, no
+ * logout). On success the server revokes every earlier session — this one's
+ * token included — so the returned LoginResponse (+ revoked_sessions) is
+ * stored right here, before any other in-flight request can see the old
+ * token fail. Calling setAuthSession(res) again is harmless.
+ */
+export const authChangePassword = async (current_password, new_password, { deviceLabel: label } = {}) => {
+  const res = await request("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify(_withDeviceLabel({ current_password, new_password }, label)),
+  });
+  setAuthSession(res);
+  return res;
+};
+/** Revoke this device's session ({ok, revoked}); idempotent, works when idle. */
+export const authLogout = () => request("/api/auth/logout", { method: "POST" });
+/** {sessions:[SessionRow], current_id, auth_disabled} */
+export const fetchAuthSessions = () => request("/api/auth/sessions");
+/** {ok, current}: `current` true means this device just signed itself out. */
+export const revokeAuthSession = (id) =>
+  request(`/api/auth/sessions/${encodeURIComponent(id)}/revoke`, { method: "POST" });
+/** {ok, revoked: n} */
+export const revokeOtherSessions = () =>
+  request("/api/auth/sessions/revoke-others", { method: "POST" });
+/** Always counts as user activity: {ok, idle_timeout_minutes, idle_remaining_s}. */
+export const pingActivity = () =>
+  request("/api/auth/activity", { method: "POST", activity: true });
+/**
+ * One-time WebSocket ticket {ticket, expires_in} (30 s, single use); ticket
+ * null when auth is off. Fetched by a (re)connect, never by the user: no
+ * activity header.
+ */
+export const fetchWsTicket = ({ signal } = {}) =>
+  request("/api/auth/ws-ticket", { method: "POST", signal, activity: false });
+/**
+ * Mint a fresh media token and store it ({token, expires_at, expires_in};
+ * token null when auth is off, which clears the stored one). Not stored if
+ * the session changed while the request was in flight.
+ */
+export async function mintMediaToken() {
+  const sent = getAuthToken();
+  const r = await request("/api/auth/media-token", { method: "POST" });
+  if (getAuthToken() === sent) setMediaToken(r?.token || null, r?.expires_at ?? null);
+  return r;
+}
+/** {idle_timeout_minutes, choices, default_idle_timeout_minutes, session_max_days, auth_disabled, password_set} */
+export const fetchAuthSettings = () => request("/api/settings/auth");
+export const updateAuthSettings = (body) =>
+  request("/api/settings/auth", { method: "PUT", body: JSON.stringify(body) });
 
 // --- Telemetry ---
 export const fetchTelemetryStatus = () => request("/api/telemetry");
@@ -541,8 +818,10 @@ export const fetchProjectDropboxStatus = (project) =>
   request(`/api/projects/${e(project)}/dropbox/status`);
 
 // --- FormData helper (shared by voice + upload) ---
+// Uploads, voice and backup import are always user-driven, so they always
+// count as activity.
 async function formDataRequest(url, formData, errorLabel = "Request", opts = {}) {
-  const headers = {};
+  const headers = { "X-User-Activity": "1" };
   const token = getAuthToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -560,7 +839,7 @@ async function formDataRequest(url, formData, errorLabel = "Request", opts = {})
       throw e;
     }
   }
-  if (res.status === 401) handle401(token);
+  if (res.status === 401) await handle401(res, token, url);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.detail || `${errorLabel} (${res.status})`);

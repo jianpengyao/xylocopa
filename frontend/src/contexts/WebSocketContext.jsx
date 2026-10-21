@@ -1,16 +1,19 @@
 import { createContext, useContext, useEffect, useRef, useCallback, useState } from "react";
-import { getAuthToken } from "../lib/api";
+import { AuthError, expireSession, fetchWsTicket, getAuthToken, withTimeout } from "../lib/api";
 import { calibrate } from "../lib/serverTime";
 import { pickPrimaryAgent } from "../lib/notifications";
 import {
   nextBackoff,
   onNetworkResume,
+  wsSessionEndReason,
+  WS_AUTH_CLOSE_CODE,
   WS_PING_INTERVAL_MS as PING_INTERVAL_MS,
   WS_PONG_TIMEOUT_MS as PONG_TIMEOUT_MS,
   WS_HANDSHAKE_TIMEOUT_MS as HANDSHAKE_TIMEOUT_MS,
   WS_INITIAL_RECONNECT_MS as INITIAL_RECONNECT_MS,
   WS_MAX_RECONNECT_MS as MAX_RECONNECT_MS,
 } from "../lib/reconnect";
+import { useAuth } from "./AuthContext";
 
 const WebSocketContext = createContext(null);
 
@@ -26,8 +29,21 @@ const WebSocketContext = createContext(null);
  * Reconnect policy: never gives up. Backoff 1s × 1.5ⁿ capped at 30s on
  * close; reset and retried immediately when the page is foregrounded or
  * the browser reports the network is back (see lib/reconnect.js).
+ *
+ * Auth: inside AuthGuard with auth on, every connect first trades the
+ * session for a one-time ticket (POST /api/auth/ws-ticket, 30 s, single
+ * use) and opens /ws/status?ticket=…. Under DISABLE_AUTH, and outside
+ * AuthGuard where there is no session to trade, it connects bare. Only a
+ * 4001 close with expired / revoked / idle ends the session (no reconnect);
+ * 4001 missing / invalid fetches a fresh ticket with its own backoff, and on
+ * a socket opened bare also re-runs the auth check (useAuth().refresh).
  */
 export function WebSocketProvider({ children }) {
+  const { authReady, authDisabled, refresh: refreshAuth } = useAuth();
+  const useTicket = authReady && !authDisabled;
+  // AuthContext.refresh, read at close time (see the bare 4001 case below).
+  const refreshAuthRef = useRef(refreshAuth);
+  useEffect(() => { refreshAuthRef.current = refreshAuth; }, [refreshAuth]);
   const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef(null);
@@ -35,6 +51,19 @@ export function WebSocketProvider({ children }) {
   const pongTimer = useRef(null);
   const lastMsgAt = useRef(0);
   const connectRef = useRef(null);
+  // A ticket fetch is under way: connect() and the resume handler must not
+  // start a second one (wsRef is still null meanwhile).
+  const ticketInFlight = useRef(false);
+  // Bumped per ticket fetch and on teardown; a stale fetch result is dropped.
+  const connectGen = useRef(0);
+  // The server ended this session (4001 expired/revoked/idle, or the ticket
+  // fetch failed auth). api.js has run the expiry flow and AuthGuard moves
+  // to /login, which unmounts this provider: no more reconnects meanwhile.
+  const sessionEnded = useRef(false);
+  // Backoff for 4001 missing/invalid. Those sockets are accepted before the
+  // close, so onopen has already reset reconnectDelay; without its own delay
+  // a persistent ticket problem would reconnect every second.
+  const authRetryDelay = useRef(INITIAL_RECONNECT_MS);
   // Merged viewing state: union of all agent IDs currently being viewed
   // by any component (AgentChatPage panes). Backend receives the full set.
   const viewingAgentsRef = useRef(new Set());
@@ -122,18 +151,13 @@ export function WebSocketProvider({ children }) {
     }, PONG_TIMEOUT_MS);
   }, [dropSocket]);
 
-  const connect = useCallback(() => {
-    const cur = wsRef.current;
-    if (cur && (cur.readyState === WebSocket.OPEN || cur.readyState === WebSocket.CONNECTING)) return;
-    clearTimeout(reconnectTimer.current);
-    reconnectTimer.current = null;
-
-    const token = getAuthToken();
-
+  // Open the socket, with `ticket` when there is one. `sessionToken` is the
+  // stored session the ticket was minted for: a session-ending close then
+  // expires that session only, never a newer login from another tab.
+  const openSocket = useCallback((ticket, sessionToken) => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = token
-      ? `${proto}//${window.location.host}/ws/status?token=${encodeURIComponent(token)}`
-      : `${proto}//${window.location.host}/ws/status`;
+    const base = `${proto}//${window.location.host}/ws/status`;
+    const url = ticket ? `${base}?ticket=${encodeURIComponent(ticket)}` : base;
 
     let ws;
     try {
@@ -171,6 +195,8 @@ export function WebSocketProvider({ children }) {
 
     ws.onmessage = (e) => {
       lastMsgAt.current = Date.now();
+      // Any frame means the server kept this socket past its auth check.
+      authRetryDelay.current = INITIAL_RECONNECT_MS;
       let event;
       try {
         event = JSON.parse(e.data);
@@ -191,7 +217,7 @@ export function WebSocketProvider({ children }) {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       clearTimeout(handshakeTimer);
       // A socket we already dropped (or replaced) must not schedule a
       // second reconnect on top of the one its replacement owns.
@@ -200,6 +226,29 @@ export function WebSocketProvider({ children }) {
       clearTimeout(pongTimer.current);
       pongTimer.current = null;
       setConnected(false);
+      const endReason = wsSessionEndReason(ev);
+      if (endReason) {
+        const current = getAuthToken();
+        if (sessionToken && current && current !== sessionToken) {
+          // That session was already replaced by a newer login: use it.
+          scheduleReconnect(0);
+          return;
+        }
+        sessionEnded.current = true;
+        expireSession(endReason, { requestToken: sessionToken, source: "ws-status" }).catch(() => {});
+        return;
+      }
+      if (ev?.code === WS_AUTH_CLOSE_CODE) {
+        // missing / invalid: the next connect fetches a fresh ticket.
+        // Opened without one, the server now wants a ticket (DISABLE_AUTH
+        // was flipped off under this tab): re-run the auth check so
+        // AuthGuard learns the mode and this provider reconnects with one.
+        if (!ticket) Promise.resolve().then(() => refreshAuthRef.current?.()).catch(() => {});
+        const delay = authRetryDelay.current;
+        authRetryDelay.current = nextBackoff(delay, { max: MAX_RECONNECT_MS });
+        scheduleReconnect(delay);
+        return;
+      }
       scheduleReconnect(reconnectDelay.current);
       reconnectDelay.current = nextBackoff(reconnectDelay.current, { max: MAX_RECONNECT_MS });
     };
@@ -209,6 +258,47 @@ export function WebSocketProvider({ children }) {
     };
   }, [_syncViewing, scheduleReconnect, dropSocket]);
 
+  const connect = useCallback(() => {
+    const cur = wsRef.current;
+    if (cur && (cur.readyState === WebSocket.OPEN || cur.readyState === WebSocket.CONNECTING)) return;
+    if (ticketInFlight.current || sessionEnded.current) return;
+    clearTimeout(reconnectTimer.current);
+    reconnectTimer.current = null;
+
+    const sessionToken = getAuthToken();
+    if (!useTicket) {
+      openSocket(null, sessionToken);
+      return;
+    }
+    const gen = ++connectGen.current;
+    ticketInFlight.current = true;
+    // Bounded like the handshake: a fetch that hangs (iOS resume) would
+    // otherwise hold the in-flight guard forever.
+    withTimeout((signal) => fetchWsTicket({ signal }), HANDSHAKE_TIMEOUT_MS).then(
+      (r) => {
+        if (gen !== connectGen.current) return;
+        ticketInFlight.current = false;
+        openSocket(r?.ticket || null, sessionToken);
+      },
+      (err) => {
+        if (gen !== connectGen.current) return;
+        ticketInFlight.current = false;
+        if (err instanceof AuthError) {
+          const current = getAuthToken();
+          if (current && current !== sessionToken) {
+            scheduleReconnect(0); // a newer login won the race
+            return;
+          }
+          sessionEnded.current = true; // api.js already ran the expiry flow
+          return;
+        }
+        console.warn("WebSocketProvider: ticket fetch failed, will retry:", err);
+        scheduleReconnect(reconnectDelay.current);
+        reconnectDelay.current = nextBackoff(reconnectDelay.current, { max: MAX_RECONNECT_MS });
+      },
+    );
+  }, [useTicket, openSocket, scheduleReconnect]);
+
   // Timers call connect through a ref so scheduleReconnect/dropSocket
   // (declared above connect) never capture a stale closure.
   useEffect(() => {
@@ -216,6 +306,7 @@ export function WebSocketProvider({ children }) {
   }, [connect]);
 
   useEffect(() => {
+    sessionEnded.current = false;
     connect();
 
     const pingInterval = setInterval(probeLiveness, PING_INTERVAL_MS);
@@ -243,6 +334,8 @@ export function WebSocketProvider({ children }) {
     // still reports OPEN after an iOS resume is verified with a probe.
     const offResume = onNetworkResume(() => {
       reconnectDelay.current = INITIAL_RECONNECT_MS;
+      // A ticket fetch is already under way; its socket follows.
+      if (ticketInFlight.current) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         probeLiveness();
@@ -262,6 +355,8 @@ export function WebSocketProvider({ children }) {
       reconnectTimer.current = null;
       clearTimeout(pongTimer.current);
       pongTimer.current = null;
+      connectGen.current += 1; // drop a ticket fetch still in flight
+      ticketInFlight.current = false;
       offResume();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocusChange);

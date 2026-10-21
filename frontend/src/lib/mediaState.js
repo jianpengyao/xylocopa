@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { filesExistsBatch } from "./api";
+import { stripAuthParams } from "./urls";
 
 // Parse a media URL into the shape expected by /api/files/exists-batch.
 // Strips ?query (notably the ?token=… that fileUrl() appends) so the
@@ -29,15 +30,17 @@ export function parseFileUrl(url) {
 // Batch-probe existence + size + mtime for a list of URLs. One round-trip
 // replaces N HEAD probes (and HEAD isn't auto-registered on @router.get
 // anyway, so per-row probes used to come back 405). Returns:
-//   statMap — keyed by URL with { exists, size, mtime } (URLs that don't
-//             parse are absent; caller treats them as exists)
+//   statMap — keyed by stripAuthParams(url) with { exists, size, mtime }
+//             (URLs that don't parse are absent; caller treats them as
+//             exists). Keyed without ?token= so a media-token refresh
+//             neither re-probes nor flashes a null stat.
 //   refresh — re-runs the probe (for retry-after-missing UX)
 export function useBatchExists(urls) {
   const [statMap, setStatMap] = useState({});
   const [refreshTick, setRefreshTick] = useState(0);
   const probeKeys = useMemo(() => {
     if (!urls) return [];
-    return urls.filter((u) => parseFileUrl(u)).sort();
+    return urls.filter((u) => parseFileUrl(u)).map(stripAuthParams).sort();
   }, [urls]);
   const cacheKey = probeKeys.join("|");
   useEffect(() => {
@@ -69,7 +72,7 @@ export function useFileExists(url) {
   let stat;
   if (!url) stat = null;
   else if (!parseFileUrl(url)) stat = { exists: true };
-  else stat = statMap[url] || null;
+  else stat = statMap[stripAuthParams(url)] || null;
   return { stat, refresh };
 }
 

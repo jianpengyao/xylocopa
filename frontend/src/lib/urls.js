@@ -6,7 +6,7 @@
  * only require updating this single file.
  */
 
-import { getAuthToken } from "./api";
+import { getMediaToken } from "./api";
 
 // ---------------------------------------------------------------------------
 // API path prefixes
@@ -20,12 +20,52 @@ export const API_PREVIEW_PREFIX = "/api/preview/t/";
 // Private helpers
 // ---------------------------------------------------------------------------
 
-/** Append auth token as query parameter for browser-initiated requests (<img>, <video>, <a>). */
-function withToken(url) {
-  const token = getAuthToken();
+/**
+ * Append the media token as ?token= for browser-initiated media requests
+ * (<img>, <video>, <a download>). The session token never goes into a URL;
+ * the media token (scope=media, session-bound, ~12 h) is accepted only on
+ * GET/HEAD of /api/files, /api/thumbs and /api/uploads. Without one (auth
+ * off, or not minted yet) the URL is returned unchanged.
+ */
+export function withMediaToken(url) {
+  return appendToken(url, getMediaToken());
+}
+
+function appendToken(url, token) {
   if (!token) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+const MEDIA_PREFIXES = [API_FILES_PREFIX, API_THUMBS_PREFIX, API_UPLOADS_PREFIX];
+
+/**
+ * Re-stamp a media URL built earlier (and memoized) with `token`, the
+ * current media token by default, so it outlives the token it was built
+ * with. A URL that already carries that token, and any non-media URL, is
+ * returned unchanged.
+ */
+export function withCurrentMediaToken(url, token = getMediaToken()) {
+  if (typeof url !== "string" || !MEDIA_PREFIXES.some((p) => url.startsWith(p))) return url;
+  const m = /[?&]token=([^&#]*)/.exec(url);
+  if ((m ? m[1] : "") === (token ? encodeURIComponent(token) : "")) return url;
+  return appendToken(stripAuthParams(url), token);
+}
+
+/**
+ * Drop `token` and `ticket` query parameters, keeping every other parameter
+ * (`_v`, `tile`, `download`) in order and as encoded. Used to key caches and
+ * stat maps so they survive a media-token change.
+ */
+export function stripAuthParams(url) {
+  if (typeof url !== "string") return url;
+  const q = url.indexOf("?");
+  if (q < 0) return url;
+  const h = url.indexOf("#", q);
+  const query = url.slice(q + 1, h < 0 ? undefined : h);
+  const hash = h < 0 ? "" : url.slice(h);
+  const kept = query.split("&").filter((p) => p && !/^(?:token|ticket)(?:=|$)/.test(p));
+  return url.slice(0, q) + (kept.length ? `?${kept.join("&")}` : "") + hash;
 }
 
 // ---------------------------------------------------------------------------
@@ -34,7 +74,7 @@ function withToken(url) {
 
 /** Build URL for a user-uploaded file. */
 export function uploadUrl(filename) {
-  return withToken(`${API_UPLOADS_PREFIX}${encodeURIComponent(filename)}`);
+  return withMediaToken(`${API_UPLOADS_PREFIX}${encodeURIComponent(filename)}`);
 }
 
 /**
@@ -54,13 +94,13 @@ export function attachmentUrl(absPath) {
 /** Build URL for a project file. */
 export function fileUrl(project, relPath) {
   const segments = relPath.split("/").map(encodeURIComponent).join("/");
-  return withToken(`${API_FILES_PREFIX}${encodeURIComponent(project)}/${segments}`);
+  return withMediaToken(`${API_FILES_PREFIX}${encodeURIComponent(project)}/${segments}`);
 }
 
 /** Build URL for a project file thumbnail. */
 export function thumbUrl(project, relPath) {
   const segments = relPath.split("/").map(encodeURIComponent).join("/");
-  return withToken(`${API_THUMBS_PREFIX}${encodeURIComponent(project)}/${segments}`);
+  return withMediaToken(`${API_THUMBS_PREFIX}${encodeURIComponent(project)}/${segments}`);
 }
 
 /** Build URL for a sandboxed web-app preview. The preview-scoped token rides

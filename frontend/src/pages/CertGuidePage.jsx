@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { authedFetch } from "../lib/api";
 
 const detectPlatform = () => {
   if (typeof navigator === "undefined") return "ios";
@@ -126,11 +127,18 @@ function CertRegenSection() {
     setRegenerating(true);
     setMsg(null);
     try {
-      const r = await fetch("/api/cert/regenerate", {
+      // Bearer if this browser is signed in. authedFetch has no 401 side
+      // effects: this page is public (no AuthGuard), so a 401 is shown here
+      // and never routed into the session-expiry flow.
+      const r = await authedFetch("/api/cert/regenerate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ips: [cleaned], dns: ["xylocopa", "localhost"] }),
       });
+      if (r.status === 401) {
+        setMsg({ kind: "signin" });
+        return;
+      }
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
       // Backend skipped the regen because the current cert already covers
@@ -189,7 +197,12 @@ function CertRegenSection() {
           >
             {regenerating ? "Regenerating…" : isCovered ? "No regen needed" : "Regenerate"}
           </button>
-          {msg && (
+          {msg?.kind === "signin" ? (
+            <p className="text-xs mt-2 text-danger">
+              Sign in first to regenerate the certificate.{" "}
+              <a href="/login" className="text-accent underline">Sign in</a>
+            </p>
+          ) : msg && (
             <p className={`text-xs mt-2 ${msg.kind === "ok" ? "text-ok" : "text-danger"}`}>
               {msg.text}
             </p>
