@@ -17,6 +17,8 @@ Auth mirrors /ws/status (ws_auth.py): HTTP middleware does not cover
 WebSocket handshakes, so a one-time ``?ticket=`` from POST /api/auth/ws-ticket
 is checked in-endpoint (close 4001 + reason on failure), and a watchdog closes
 the socket with 4001 when the session is revoked, expires or goes idle.
+A socket accepted while protection was off is closed 4001 when it is
+switched on (ws_auth.track_open).
 """
 
 import asyncio
@@ -184,6 +186,8 @@ async def terminal_ws(ws: WebSocket, agent_id: str):
     pump = asyncio.create_task(_pump_output())
     # On a 4001 the pump stops first, so no output follows the close frame.
     wd = ws_auth.start_watchdog(ws, ctx, pump.cancel)
+    # Accepted without a session: closed 4001 when protection is switched on.
+    ws_auth.track_open(ws, ctx, pump.cancel)
 
     try:
         while True:
@@ -221,6 +225,7 @@ async def terminal_ws(ws: WebSocket, agent_id: str):
     finally:
         if wd is not None:
             wd.cancel()
+        ws_auth.untrack_open(ws)
         pump.cancel()
         try:
             loop.remove_reader(master)

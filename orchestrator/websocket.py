@@ -174,6 +174,8 @@ async def websocket_endpoint(ws: WebSocket):
     # Re-checks the session while the socket is open; closes 4001 on
     # revoke / expiry / idle. None when auth is off.
     wd = ws_auth.start_watchdog(ws, ctx, lambda: ws_manager.disconnect(ws))
+    # Accepted without a session: closed 4001 when protection is switched on.
+    ws_auth.track_open(ws, ctx, lambda: ws_manager.disconnect(ws))
     try:
         while True:
             # Keep connection alive; client may send pings or viewing updates
@@ -213,6 +215,7 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         if wd is not None:
             wd.cancel()
+        ws_auth.untrack_open(ws)
 
 
 # ---- Event helpers (called from dispatcher/main) ----

@@ -23,15 +23,59 @@ import bcrypt
 from starlette.responses import JSONResponse
 
 import config
+import env_file
 
 logger = logging.getLogger("orchestrator.auth")
+
+
+def is_disable_auth_value(value: str | None) -> bool:
+    """True when a DISABLE_AUTH value turns auth off ("1", "true", "yes")."""
+    return (value or "").strip() in ("1", "true", "yes")
 
 
 def auth_disabled() -> bool:
     """True when DISABLE_AUTH turns every password/session check off.
 
-    Read per call: tests flip the env at runtime."""
-    return os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes")
+    Read per call: tests flip the env at runtime, and the Monitor > Security
+    switch (write_disable_auth) flips it in a running server."""
+    return is_disable_auth_value(os.environ.get("DISABLE_AUTH"))
+
+
+# ---------------------------------------------------------------------------
+# Password-protection switch: DISABLE_AUTH in the project .env
+# ---------------------------------------------------------------------------
+# .env is the one source of truth. pm2 injects it at start (and on
+# `pm2 restart --update-env`); config.py loads it with override=False.
+
+def env_file_disable_auth() -> bool | None:
+    """What .env says right now (read fresh): True = protection off, False =
+    on, None when the file or the DISABLE_AUTH line is missing/unreadable."""
+    value = env_file.read_key(env_file.ENV_PATH, "DISABLE_AUTH")
+    return None if value is None else is_disable_auth_value(value)
+
+
+def write_disable_auth(disabled: bool) -> None:
+    """Switch protection: rewrite .env first, then the process env, so it
+    applies at once and survives a restart. Raises OSError when .env can't
+    be written; the running state is then unchanged."""
+    value = "1" if disabled else "0"
+    env_file.set_key(env_file.ENV_PATH, "DISABLE_AUTH", value)
+    os.environ["DISABLE_AUTH"] = value
+
+
+def sync_disable_auth_from_env_file() -> None:
+    """At startup, follow DISABLE_AUTH in .env when the file sets it.
+
+    pm2 replays the env it captured at the last start on a crash respawn and
+    on `pm2 resurrect`, which can predate a switch made in Monitor > Security;
+    without a DISABLE_AUTH line the process env is left as is."""
+    value = env_file.read_key(env_file.ENV_PATH, "DISABLE_AUTH")
+    if value is None:
+        return
+    if is_disable_auth_value(value) != auth_disabled():
+        logger.warning("AUTH_PROTECTION %s: process env disagreed with .env DISABLE_AUTH; following .env",
+                       "off" if is_disable_auth_value(value) else "on")
+    os.environ["DISABLE_AUTH"] = value
 
 
 # ---------------------------------------------------------------------------

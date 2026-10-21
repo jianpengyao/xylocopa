@@ -1,4 +1,5 @@
-"""Auth routes — login, password setup/change, sessions, auth check, settings.
+"""Auth routes — login, password setup/change, sessions, auth check, settings,
+and the password-protection switch (GET/POST /api/auth/protection).
 
 Sessions are server-side rows (auth_store.py). Exempt from the auth
 middleware: check, login, set-password, logout. Everything else here needs a
@@ -18,10 +19,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import auth_store
+import ws_auth
 from auth import (
     LoopLocal,
     auth_disabled,
     change_password_limiter,
+    env_file_disable_auth,
     get_password_hash,
     global_failures,
     hash_password_async,
@@ -31,6 +34,7 @@ from auth import (
     normalize_ip,
     store_password_hash,
     verify_password_async,
+    write_disable_auth,
 )
 from config import AUTH_IDLE_CHOICES, AUTH_SESSION_MAX_DAYS, AUTH_TIMEOUT_MINUTES
 from database import get_db
@@ -434,6 +438,199 @@ async def auth_media_token(request: Request, db: Session = Depends(get_db)):
         return _nostore({"token": None, "expires_at": None, "expires_in": 0})
     token, exp = auth_store.mint_media_token(db, ctx)
     return _nostore({"token": token, "expires_at": exp, "expires_in": max(0, round(exp - time.time()))})
+
+
+# ---- Password-protection switch ----
+
+def _caller_label(ctx) -> str:
+    if ctx is None:
+        return "-"
+    return ctx.session_id if ctx.kind == "session" else ctx.kind
+
+
+async def _verify_server_password(request: Request, db: Session, password: str,
+                                  pw_hash: str) -> JSONResponse | None:
+    """Re-check the server password for the protection switch: None when it
+    matches, else 429 / 403. Same limiter as change-password (shared bucket,
+    so the two don't add up to a bigger guess budget): keyed by the caller's
+    session, else its IP; loopback is never limited."""
+    ctx = _caller(request)
+    ip = _client_ip(request)
+    if ctx is not None and ctx.kind == "session":
+        key, limited = "s:" + ctx.session_id, True
+    else:
+        key, limited = ip, not is_loopback(ip)
+    reset_at = auth_store.get_limiter_reset_at(db)
+    if limited:
+        locked, remaining = change_password_limiter.check(key, reset_at=reset_at)
+        if locked:
+            return _too_many(remaining)
+
+    async with change_password_limiter.one_at_a_time(key if limited else None):
+        if limited:
+            locked, remaining = change_password_limiter.check(key, reset_at=reset_at)
+            if locked:
+                return _too_many(remaining)
+        await global_failures.throttle()
+        if not await verify_password_async(password, pw_hash):
+            global_failures.record()
+            detail = "Password is wrong"
+            if limited:
+                now_locked, lock_secs = change_password_limiter.record_failure(key, reset_at=reset_at)
+                if now_locked:
+                    detail += f". Locked out for {lock_secs}s."
+                    logger.warning("Protection switch locked for %s after repeated failures (%ds)",
+                                   key if key.startswith("s:") else ip, lock_secs)
+            # 403, never 401: a 401 makes the frontend log out.
+            return _error(403, detail)
+    if limited:
+        change_password_limiter.record_success(key)
+    return None
+
+
+def _write_protection(enabled: bool) -> JSONResponse | None:
+    """.env first, then the process env (auth.write_disable_auth). None on
+    success; a 500 with the running state unchanged when .env can't be written."""
+    try:
+        write_disable_auth(not enabled)
+    except OSError as e:
+        reason = e.strerror or type(e).__name__
+        logger.warning("AUTH_PROTECTION_ENV_WRITE_FAILED %s: %s", type(e).__name__, reason)
+        return _error(500, f"Could not update .env: {reason}")
+    return None
+
+
+@router.post("/protection")
+async def auth_protection(request: Request, db: Session = Depends(get_db)):
+    """Switch password protection for the whole server on or off.
+
+    Body: {"enabled": bool, "password": str, "new_password"?: str,
+    "device_label"?: str}. DISABLE_AUTH in the project .env is the one source
+    of truth (0 = on, 1 = off): .env is rewritten first, then the process
+    env, so the switch applies at once and survives a restart.
+
+    Not auth-exempt: while protection is on the middleware already demands a
+    session; while it is off the middleware lets everything through, so the
+    password check here is the gate. A wrong password is 403 (never 401).
+    - on (was off): checks the password (or, with none set yet, stores
+      new_password), then returns a fresh session like login plus
+      "settings" and "protection" (GET /protection's state); sockets
+      accepted without a session are closed 4001 shortly after, so every
+      device has to present a ticket.
+    - off (was on): checks the password; sessions are kept.
+      {"settings", "protection"}.
+    - already in that state: {"settings", "protection"}; a .env that
+      disagrees (a hand edit not yet applied) is rewritten to match.
+    """
+    body = await _json_body(request)
+    if body is None:
+        return _error(400, "Invalid JSON body")
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return _error(400, "enabled must be true or false")
+    password = _str_field(body, "password")
+    ip = _client_ip(request)
+
+    if enabled == (not auth_disabled()):
+        return await _protection_resync(request, db, enabled, password, ip)
+    if not enabled:
+        return await _protection_off(request, db, password, ip)
+
+    pw_hash = get_password_hash(db)
+    if pw_hash is not None:
+        denied = await _verify_server_password(request, db, password, pw_hash)
+        if denied is not None:
+            return denied
+        failed = _write_protection(True)
+        if failed is not None:
+            return failed
+    else:
+        # No password yet: the switch sets the first one.
+        new_pw = _str_field(body, "new_password")
+        if len(new_pw) < MIN_PASSWORD_LENGTH:
+            return _error(400, f"New password must be at least {MIN_PASSWORD_LENGTH} characters")
+        new_hash = await hash_password_async(new_pw)
+        async with _setup_lock():
+            if get_password_hash(db) is not None:
+                return _error(400, "Password already set")
+            failed = _write_protection(True)
+            if failed is not None:
+                return failed
+            try:
+                store_password_hash(db, new_hash)
+            except SQLAlchemyError:
+                db.rollback()
+                logger.exception("AUTH_STORE_ERROR: /api/auth/protection")
+                # Back to off: on without a password would be wide open.
+                if _write_protection(False) is not None:
+                    logger.error("AUTH_PROTECTION could not switch back off after a store error")
+                return _error(503, "Auth store unavailable")
+        logger.info("Initial password set via the protection switch")
+
+    previous = _bearer(request)
+    token, row = _new_session(db, request, body.get("device_label"))
+    if previous and auth_store.revoke_token(db, previous, "replaced"):
+        logger.info("LOGIN_REPLACED ip=%s session=%s", ip, row.id)
+    logger.info("AUTH_PROTECTION on ip=%s session=%s", ip, row.id)
+    ws_auth.schedule_close_open_sockets()
+    return _nostore({**_login_payload(db, token, row), "settings": _auth_settings(db),
+                     "protection": _protection_state(db)})
+
+
+async def _protection_off(request: Request, db: Session, password: str, ip: str) -> JSONResponse:
+    pw_hash = get_password_hash(db)
+    if pw_hash is None:
+        return _error(400, "No password set")
+    denied = await _verify_server_password(request, db, password, pw_hash)
+    if denied is not None:
+        return denied
+    failed = _write_protection(False)
+    if failed is not None:
+        return failed
+    logger.info("AUTH_PROTECTION off ip=%s session=%s", ip, _caller_label(_caller(request)))
+    return _nostore({"settings": _auth_settings(db), "protection": _protection_state(db)})
+
+
+async def _protection_resync(request: Request, db: Session, enabled: bool, password: str,
+                             ip: str) -> JSONResponse:
+    """Already in the requested state. When .env says otherwise, rewrite it
+    so the next start agrees with the running server."""
+    env_on = env_file_disable_auth() is not True
+    if env_on != enabled:
+        if not enabled:
+            # Writing DISABLE_AUTH=1 turns protection off from the next
+            # start: same password gate as switching it off.
+            pw_hash = get_password_hash(db)
+            if pw_hash is not None:
+                denied = await _verify_server_password(request, db, password, pw_hash)
+                if denied is not None:
+                    return denied
+        failed = _write_protection(enabled)
+        if failed is not None:
+            return failed
+        logger.info("AUTH_PROTECTION %s ip=%s session=%s env_resync=1", "on" if enabled else "off",
+                    ip, _caller_label(_caller(request)))
+    return _nostore({"settings": _auth_settings(db), "protection": _protection_state(db)})
+
+
+def _protection_state(db: Session) -> dict:
+    disabled = auth_disabled()
+    # What .env says now (None: no file / no DISABLE_AUTH line, which a
+    # restart reads as protection on). Out of sync after a hand edit.
+    env_disabled = env_file_disable_auth()
+    return {
+        "auth_disabled": disabled,
+        "password_set": get_password_hash(db) is not None,
+        "env_file_disable_auth": env_disabled,
+        "env_file_in_sync": (env_disabled is True) == disabled,
+    }
+
+
+@router.get("/protection")
+async def get_auth_protection(db: Session = Depends(get_db)):
+    """The switch's state: the running value, what .env says, and whether
+    they agree. Kept apart from /api/settings/auth (idle-lock settings)."""
+    return _nostore(_protection_state(db))
 
 
 def _auth_settings(db: Session) -> dict:

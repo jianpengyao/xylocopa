@@ -20,6 +20,13 @@ seconds (revoked, expired, idle; for a legacy JWT, exp and not_before) and
 closes with 4001 + reason on failure. Socket traffic never counts as
 activity. DISABLE_AUTH or no password: the ticket is ignored and there is
 no watchdog (today's behaviour).
+
+Protection can be switched at runtime (Monitor > Security). Switched off: a
+watchdog skips its checks until it is back on, so a signed-in device's
+socket survives. Switched on: every socket accepted without a session
+("open", tracked by track_open) is closed 4001 "missing" after a short delay
+(schedule_close_open_sockets), so the device fetches a ticket - or, without
+a session, lands on the login screen.
 """
 
 import asyncio
@@ -36,6 +43,17 @@ logger = logging.getLogger("orchestrator.auth")
 
 WS_AUTH_CLOSE_CODE = 4001
 _STORE_ERROR_CODE = 1011
+_CLOSE_TIMEOUT_S = 5
+
+# Delay between switching protection on and closing the open sockets: the
+# enabling device stores its new token first, then reconnects with a ticket.
+# Read when the close runs (tests shorten it).
+OPEN_CLOSE_DELAY_S = 1.5
+
+# Sockets accepted without a session -> the handler's on_fail (stop sending).
+_open_sockets: dict = {}
+# Keeps scheduled close tasks referenced until they finish.
+_pending_closes: set = set()
 
 
 def _session_local():
@@ -104,6 +122,10 @@ async def _watch(ws: WebSocket, ctx: auth_store.WsAuthCtx, on_fail) -> None:
     while True:
         # Read per iteration: tests and XY_WS_AUTH_RECHECK_S tune it.
         await asyncio.sleep(config.WS_AUTH_RECHECK_S)
+        if auth_disabled():
+            # Protection switched off at runtime: nothing to enforce (and no
+            # activity is recorded, so idle would misfire). Resumes when on.
+            continue
         try:
             reason = _check(ctx)
         except SQLAlchemyError:
@@ -133,3 +155,53 @@ def start_watchdog(ws: WebSocket, ctx: auth_store.WsAuthCtx | None, on_fail) -> 
     if ctx is None or ctx.kind == "open":
         return None
     return asyncio.create_task(_watch(ws, ctx, on_fail))
+
+
+def track_open(ws: WebSocket, ctx: auth_store.WsAuthCtx | None, on_fail) -> None:
+    """Remember a socket accepted without a session (auth off / no password)
+    so close_open_sockets can end it when protection is switched on. The
+    handler calls untrack_open when the socket ends."""
+    if ctx is not None and ctx.kind == "open":
+        _open_sockets[ws] = on_fail
+
+
+def untrack_open(ws: WebSocket) -> None:
+    _open_sockets.pop(ws, None)
+
+
+async def close_open_sockets(reason: str = "missing") -> int:
+    """Close every tracked open socket with 4001 + reason (on_fail first, as
+    in the watchdog). Returns how many were closed."""
+    victims = list(_open_sockets.items())
+    _open_sockets.clear()
+
+    async def _close(ws, on_fail):
+        try:
+            on_fail()
+        except Exception:
+            logger.warning("WS open-socket on_fail raised", exc_info=True)
+        try:
+            await asyncio.wait_for(ws.close(code=WS_AUTH_CLOSE_CODE, reason=reason),
+                                   timeout=_CLOSE_TIMEOUT_S)
+        except Exception:
+            pass  # already gone
+
+    await asyncio.gather(*(_close(ws, f) for ws, f in victims))
+    if victims:
+        logger.info("WS_AUTH_CLOSE_OPEN reason=%s count=%d", reason, len(victims))
+    return len(victims)
+
+
+def schedule_close_open_sockets(reason: str = "missing") -> asyncio.Task:
+    """After OPEN_CLOSE_DELAY_S, close the open sockets - unless protection
+    was switched off again meanwhile."""
+    async def _later():
+        await asyncio.sleep(OPEN_CLOSE_DELAY_S)
+        if auth_disabled():
+            return
+        await close_open_sockets(reason)
+
+    task = asyncio.create_task(_later())
+    _pending_closes.add(task)
+    task.add_done_callback(_pending_closes.discard)
+    return task

@@ -184,8 +184,9 @@ def main(argv=None, stdin=None, out=None, err=None) -> int:
               "re-presented.", file=out)
     print("Takes effect immediately; no restart needed.", file=out)
     if auth.auth_disabled():
-        print("Note: DISABLE_AUTH is set (.env or environment), so the password is not "
-              "checked until it is turned off.", file=out)
+        print("Note: DISABLE_AUTH is set (.env or environment), so password protection is "
+              "off. Turn it on in Monitor > Security, or set DISABLE_AUTH=0 in .env and "
+              "restart.", file=out)
     return EXIT_OK
 
 

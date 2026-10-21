@@ -25,7 +25,8 @@ from config import BACKEND_HOST, CORS_ORIGINS, PORT, PROJECT_CONFIGS_PATH, CC_MO
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import Agent, Project, Task, TaskStatus, AgentStatus
-from auth import auth_disabled, auth_error_response, get_password_hash, normalize_ip
+from auth import (auth_disabled, auth_error_response, get_password_hash, normalize_ip,
+                  sync_disable_auth_from_env_file)
 import auth_store
 from request_guard import RequestGuardMiddleware
 
@@ -233,6 +234,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Xylocopa starting up...")
     _main_event_loop = asyncio.get_event_loop()
+
+    # DISABLE_AUTH in .env is the source of truth (Monitor > Security
+    # rewrites it); pm2 may hand us an older snapshot of it.
+    sync_disable_auth_from_env_file()
 
     # Ensure a tmux server is running before any agent resume/launch.
     #
