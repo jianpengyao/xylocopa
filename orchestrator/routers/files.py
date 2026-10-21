@@ -218,9 +218,28 @@ async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_
             return None
 
 
+# Types a browser renders as an active document when a raw file URL is opened
+# directly: agent-written HTML/SVG/XML would run script on the app's origin
+# (where the session token lives). Served with a CSP sandbox (opaque origin)
+# and nosniff. PDFs stay unsandboxed on purpose — Chrome's PDF viewer refuses
+# to render a sandboxed PDF — as do images and videos.
+_ACTIVE_CONTENT_TYPES = frozenset({
+    "text/html", "application/xhtml+xml", "image/svg+xml",
+    "text/xml", "application/xml", "text/xsl",
+})
+
+
+def _raw_file_headers(media_type: str) -> dict | None:
+    mt = media_type.split(";")[0].strip().lower()
+    if mt in _ACTIVE_CONTENT_TYPES or mt.endswith("+xml"):
+        return {"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"}
+    return None
+
+
 def _serve_file_with_range(full_path: str, media_type: str, request: Request):
     """Return a FileResponse with built-in Range request support."""
-    return FileResponse(full_path, media_type=media_type)
+    return FileResponse(full_path, media_type=media_type,
+                        headers=_raw_file_headers(media_type))
 
 
 def _resolve_project_file(project: str, path: str, db) -> str:
@@ -387,7 +406,8 @@ async def serve_project_file(project: str, path: str, request: Request,
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
     if download:
         return FileResponse(full_path, media_type=media_type,
-                            filename=os.path.basename(full_path))
+                            filename=os.path.basename(full_path),
+                            headers=_raw_file_headers(media_type))
     # iOS Safari needs moov-at-front mp4 to stream and rejects H.264 levels
     # above ~5.2 — remux or transcode on demand, with on-disk caching.
     if media_type == "video/mp4":
