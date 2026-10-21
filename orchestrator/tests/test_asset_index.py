@@ -745,7 +745,7 @@ def test_reconcile_scan_without_asset_tables_keeps_flushed_work(db_session):
 
 
 # ---------------------------------------------------------------------------
-# Thumbnails (?w=320, EXIF orientation)
+# Thumbnails (?tile=1, EXIF orientation)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
@@ -754,24 +754,28 @@ async def test_thumbnail_sizes_and_exif(client, env):
     from PIL import Image
 
     root = env["root"]
-    Image.new("RGB", (1000, 500), "red").save(root / "out" / "big.png")
+    big = Image.new("RGB", (1000, 500), "red")
+    big.paste((0, 255, 0), (0, 0, 250, 500))  # green left quarter: cropped away
+    big.save(root / "out" / "big.png")
     exif = Image.Exif()
     exif[0x0112] = 6  # rotate 90° CW on display
     Image.new("RGB", (200, 100), "blue").save(root / "out" / "rot.jpg", exif=exif)
 
-    r = await client.get("/api/thumbs/demo/out/big.png?w=320")
+    r = await client.get("/api/thumbs/demo/out/big.png?tile=1")
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
-    assert Image.open(BytesIO(r.content)).size == (320, 160)
-    assert (root / "out" / ".thumbcache" / "big.png.w320.thumb.jpg").is_file()
+    tile = Image.open(BytesIO(r.content))
+    assert tile.size == (400, 400)
+    r_, g, _b = tile.convert("RGB").getpixel((5, 200))
+    assert r_ > 200 and g < 60  # center crop: the green edge is gone
+    assert (root / "out" / ".thumbcache" / "big.png.tile400.thumb.jpg").is_file()
 
     r = await client.get("/api/thumbs/demo/out/big.png")
     assert Image.open(BytesIO(r.content)).size == (1000, 500)
     assert (root / "out" / ".thumbcache" / "big.png.thumb.jpg").is_file()
 
-    r = await client.get("/api/thumbs/demo/out/big.png?w=77")  # unsupported → default
-    assert Image.open(BytesIO(r.content)).size == (1000, 500)
-
-    r = await client.get("/api/thumbs/demo/out/rot.jpg?w=320")
+    r = await client.get("/api/thumbs/demo/out/rot.jpg?tile=1")  # small: never upscaled
+    assert Image.open(BytesIO(r.content)).size == (100, 100)
+    r = await client.get("/api/thumbs/demo/out/rot.jpg")
     assert Image.open(BytesIO(r.content)).size == (100, 200)
     leftovers = [f for f in os.listdir(root / "out" / ".thumbcache") if f.endswith(".tmp")]
     assert leftovers == []

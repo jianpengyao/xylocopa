@@ -27,10 +27,11 @@ _THUMB_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 _MP4_COMPAT_LOCKS: dict[str, asyncio.Lock] = {}
 _VIDEO_THUMB_LOCKS: dict[str, asyncio.Lock] = {}
 _IMAGE_THUMB_LOCKS: dict[str, asyncio.Lock] = {}
-# Thumbnail max edge: default 1200 (chat/lightbox), 320 for grid tiles
-# (Assets view). Any other ?w= falls back to the default.
+# Thumbnail max edge 1200 (chat/lightbox). ?tile=1 instead gives a 400px
+# center-cropped square for grid tiles (Assets view), which display it
+# object-cover: a max-edge thumb of a wide chart would be upscaled there.
 _THUMB_DEFAULT_W = 1200
-_THUMB_SIZES = {320}
+_THUMB_TILE = 400
 
 
 def _mp4_has_faststart(path: str) -> bool:
@@ -172,7 +173,8 @@ async def _ensure_ios_compat_mp4(full_path: str) -> str:
             return full_path
 
 
-async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_W) -> str | None:
+async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_W,
+                              square: bool = False) -> str | None:
     """Extract a poster frame from a video file via ffmpeg, cache as JPEG.
     Returns the cache path on success, None on failure."""
     if not shutil.which("ffmpeg"):
@@ -187,12 +189,16 @@ async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             tmp = dest + ".tmp"
-            # -ss 0.5 picks an early non-black frame; scale caps the width.
+            # -ss 0.5 picks an early non-black frame; scale caps the width
+            # (or fills a width² square, center-cropped, for tiles).
             # -f image2 forces JPEG container since the .tmp suffix on the
             # output path defeats ffmpeg's extension-based format detection.
+            w = int(width)
+            vf = (f"scale={w}:{w}:force_original_aspect_ratio=increase,crop={w}:{w}"
+                  if square else f"scale='min({w},iw)':-2")
             cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5",
                    "-i", src, "-frames:v", "1",
-                   "-vf", f"scale='min({int(width)},iw)':-2",
+                   "-vf", vf,
                    "-q:v", "4", "-f", "image2", tmp]
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -387,16 +393,21 @@ async def serve_project_file(project: str, path: str, request: Request,
     return _serve_file_with_range(full_path, media_type, request)
 
 
-def _render_image_thumb(src: str, dest: str, width: int) -> None:
+def _render_image_thumb(src: str, dest: str, width: int, square: bool = False) -> None:
     """Pillow resize → JPEG q80 (EXIF-rotated), written via tmp + replace so
-    a concurrent reader never sees a partial file. Runs in a worker thread."""
+    a concurrent reader never sees a partial file. Runs in a worker thread.
+    ``square`` center-crops to a width² square (never upscaled)."""
     from PIL import Image, ImageOps
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = f"{dest}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         with Image.open(src) as img:
             img = ImageOps.exif_transpose(img)
-            img.thumbnail((width, width))
+            if square:
+                side = min(width, img.width, img.height)
+                img = ImageOps.fit(img, (side, side), Image.LANCZOS)
+            else:
+                img.thumbnail((width, width))
             if img.mode in ("RGBA", "P", "LA"):
                 img = img.convert("RGB")
             img.save(tmp, "JPEG", quality=80)
@@ -408,7 +419,7 @@ def _render_image_thumb(src: str, dest: str, width: int) -> None:
             pass
 
 
-async def _image_thumb(src: str, dest: str, width: int) -> str | None:
+async def _image_thumb(src: str, dest: str, width: int, square: bool = False) -> str | None:
     lock = _IMAGE_THUMB_LOCKS.setdefault(dest, asyncio.Lock())
     async with lock:
         try:
@@ -417,7 +428,7 @@ async def _image_thumb(src: str, dest: str, width: int) -> str | None:
         except OSError:
             pass
         try:
-            await asyncio.to_thread(_render_image_thumb, src, dest, width)
+            await asyncio.to_thread(_render_image_thumb, src, dest, width, square)
             return dest
         except Exception as e:  # noqa: BLE001 — incl. PIL DecompressionBombError; serve original
             logger.debug("Thumbnail generation failed for %s: %s", src, e)
@@ -425,16 +436,16 @@ async def _image_thumb(src: str, dest: str, width: int) -> str | None:
 
 
 @router.get("/api/thumbs/{project}/{path:path}")
-async def serve_thumbnail(project: str, path: str, request: Request, w: str | None = None,
+async def serve_thumbnail(project: str, path: str, request: Request, tile: bool = False,
                           db: Session = Depends(get_db)):
     """Serve a resized thumbnail (JPEG q80) with filesystem caching.
 
-    Max edge 1200px by default; ``?w=320`` gives the grid-tile size (cached
-    separately). Unsupported types are served as the original file.
+    Max edge 1200px by default; ``?tile=1`` gives the square grid-tile crop
+    (cached separately). Unsupported types are served as the original file.
     """
     import mimetypes
     full_path = _resolve_project_file(project, path, db)
-    width = next((n for n in _THUMB_SIZES if w == str(n)), _THUMB_DEFAULT_W)
+    width = _THUMB_TILE if tile else _THUMB_DEFAULT_W
 
     _, ext = os.path.splitext(full_path)
     ext = ext.lower()
@@ -445,9 +456,9 @@ async def serve_thumbnail(project: str, path: str, request: Request, w: str | No
         return _serve_file_with_range(full_path, media_type, request)
 
     # Cache path: .thumbcache/<filename>.thumb.jpg next to the original
-    # (<filename>.w320.thumb.jpg for the grid size)
+    # (<filename>.tile400.thumb.jpg for the grid tile)
     cache_dir = os.path.join(os.path.dirname(full_path), ".thumbcache")
-    suffix = ".thumb.jpg" if width == _THUMB_DEFAULT_W else f".w{width}.thumb.jpg"
+    suffix = f".tile{width}.thumb.jpg" if tile else ".thumb.jpg"
     thumb_file = os.path.join(cache_dir, os.path.basename(full_path) + suffix)
 
     try:
@@ -457,9 +468,9 @@ async def serve_thumbnail(project: str, path: str, request: Request, w: str | No
         pass
 
     if is_video:
-        thumb = await _extract_video_thumb(full_path, thumb_file, width)
+        thumb = await _extract_video_thumb(full_path, thumb_file, width, tile)
     else:
-        thumb = await _image_thumb(full_path, thumb_file, width)
+        thumb = await _image_thumb(full_path, thumb_file, width, tile)
     if thumb:
         return FileResponse(thumb, media_type="image/jpeg")
     media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
