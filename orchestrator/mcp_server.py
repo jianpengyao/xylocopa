@@ -1535,7 +1535,7 @@ def probe_create(
 
     Notifications: when the agent finishes responding to the probe, the
     standard stop-hook notification fires (respects per-agent mute and
-    global toggle). No probe-specific push channel.
+    each device's notification switch). No probe-specific push channel.
 
     Args:
         agent_id: Target agent (the chat to be woken). Must be explicit.

@@ -341,6 +341,17 @@ class PushSubscription(Base):
     auth_key: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     last_ack_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Per-device switches: a client's bell controls only its own row.
+    # agents_enabled gates the "message" channel (which also carries task
+    # completions and permission/question/plan cards); tasks_enabled gates
+    # "task_complete", which nothing in production sends today. The
+    # always-send channels ignore both.
+    agents_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    tasks_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    device_label: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Diagnostic only: sends since the last SW ack. Never used to delete.
+    unacked_sends: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class ProgressInsight(Base):

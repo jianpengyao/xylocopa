@@ -1235,7 +1235,14 @@ async def token_usage():
 
 @router.get("/api/settings/notifications")
 async def get_notification_settings(db: Session = Depends(get_db)):
-    """Get global notification toggle settings."""
+    """Get the legacy global notification flags.
+
+    Kept for backward compatibility only: these flags no longer gate any
+    push and the UI does not use them.  Each device's switches live on its
+    push subscription (POST /api/push/device).  init_db seeded existing
+    subscriptions from these values once, when the per-device columns
+    were added.
+    """
     agents_row = db.get(SystemConfig, "notifications_agents_enabled")
     tasks_row = db.get(SystemConfig, "notifications_tasks_enabled")
     return {
@@ -1246,7 +1253,7 @@ async def get_notification_settings(db: Session = Depends(get_db)):
 
 @router.put("/api/settings/notifications")
 async def update_notification_settings(request: Request, db: Session = Depends(get_db)):
-    """Update global notification toggle settings."""
+    """Update the legacy global notification flags (no effect on pushes)."""
     body = await request.json()
     for key in ("agents_enabled", "tasks_enabled"):
         if key in body:

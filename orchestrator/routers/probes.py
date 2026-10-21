@@ -156,7 +156,7 @@ async def trigger_probe(
 
     # No probe-specific push notify: the agent's stop hook will fire its own
     # notification when the response turn completes (via the standard message
-    # channel). This respects per-agent mute and the global toggle, matching
+    # channel). This respects per-agent mute and per-device switches, matching
     # the behavior of any other web-originated message.
 
     logger.info(

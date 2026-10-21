@@ -346,19 +346,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to mark interrupted insight generations")
 
-    # Prune zombie push subscriptions (never-acked + older than grace window)
-    try:
-        from routers.push import prune_zombie_subscriptions
-        _push_db = SessionLocal()
-        try:
-            pruned = prune_zombie_subscriptions(_push_db)
-            if pruned:
-                logger.info("startup: pruned %d zombie push subscriptions", pruned)
-        finally:
-            _push_db.close()
-    except Exception:
-        logger.exception("startup: push-sub prune failed (non-fatal)")
-
     db = SessionLocal()
     try:
         load_registry(db)

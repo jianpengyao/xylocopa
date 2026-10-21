@@ -72,8 +72,8 @@ async def _run_notify(job, db) -> str:
     url = cfg.get("url") or _default_url(job)
 
     # The user explicitly asked for this notification, so it rides the
-    # "attention" channel — never suppressed by the global message toggle
-    # or per-agent mute, same contract as notify_at.
+    # "attention" channel — never suppressed by a device's message switch
+    # (agents_enabled) or per-agent mute, same contract as notify_at.
     decision = notify(
         "attention", job.agent_id or "", title, body or title, url=url,
         meta={"job_id": job.id, "kind": job.kind},

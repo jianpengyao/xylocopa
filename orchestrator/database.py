@@ -812,6 +812,53 @@ def init_db():
             ))
             conn.commit()
 
+        # --- Per-device notification switches on push_subscriptions ---
+        # The bell used to flip global SystemConfig flags for every device.
+        # Seed existing rows from those flags (stored "0"/"1", missing =
+        # enabled) so a device muted through the old switch stays muted.
+        # ALTER + seed run in one explicit transaction: pysqlite autocommits
+        # bare DDL, so a failed seed (SQLITE_BUSY, kill) would otherwise
+        # leave the column at DEFAULT 1 and the next startup skip seeding.
+        for col, key in (("agents_enabled", "notifications_agents_enabled"),
+                         ("tasks_enabled", "notifications_tasks_enabled")):
+            if col not in push_cols:
+                conn.commit()  # end the implicit read txn before BEGIN
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE push_subscriptions ADD COLUMN {col} "
+                        "BOOLEAN NOT NULL DEFAULT 1"
+                    ))
+                    row = conn.execute(text(
+                        "SELECT value FROM system_config WHERE key = :k"
+                    ), {"k": key}).first()
+                    enabled = row is None or row[0] != "0"
+                    conn.execute(text(
+                        f"UPDATE push_subscriptions SET {col} = :v"
+                    ), {"v": 1 if enabled else 0})
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+                logger.info("migration: push_subscriptions.%s seeded from %s=%s",
+                            col, key, enabled)
+        if "device_label" not in push_cols:
+            conn.execute(text(
+                "ALTER TABLE push_subscriptions ADD COLUMN device_label VARCHAR(60)"
+            ))
+            conn.commit()
+        if "last_seen_at" not in push_cols:
+            conn.execute(text(
+                "ALTER TABLE push_subscriptions ADD COLUMN last_seen_at DATETIME"
+            ))
+            conn.commit()
+        if "unacked_sends" not in push_cols:
+            conn.execute(text(
+                "ALTER TABLE push_subscriptions ADD COLUMN unacked_sends "
+                "INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+
         # --- Add 5m / 1h cache_creation split columns to cc_sessions ---
         # Anthropic charges 1h ephemeral cache writes at 2× input vs 1.25×
         # for 5m. JSONL exposes the split via cache_creation.ephemeral_*_input_tokens.
@@ -842,8 +889,8 @@ def init_db():
 
         # --- Drop probes.notify_user (probe-specific push channel removed) ---
         # Probe responses now notify via the standard agent stop hook (message
-        # channel, respects mute / global toggle) instead of the dedicated
-        # probe channel that bypassed all gates.
+        # channel, respects per-agent mute and per-device switches) instead of
+        # the dedicated probe channel that bypassed all gates.
         if "probes" in [r[0] for r in conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )).fetchall()]:

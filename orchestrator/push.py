@@ -8,6 +8,7 @@ import json
 import logging
 import secrets
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import requests as _requests
 
@@ -21,7 +22,7 @@ logger = logging.getLogger("orchestrator.push")
 
 # Thread pool for webpush fanout. Each push is an HTTPS round-trip
 # (TLS + POST to Apple/Google/Mozilla) ~200-250ms.  Callers submit
-# fire-and-forget tasks; workers handle their own 410 cleanup so the
+# fire-and-forget tasks; workers handle their own 404/410 cleanup so the
 # event loop never waits on network I/O.
 _push_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="webpush")
 
@@ -30,21 +31,32 @@ _push_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="webpush")
 atexit.register(lambda: _push_pool.shutdown(wait=True))
 
 
-def is_notification_enabled(category: str) -> bool:
-    """Check if notifications are globally enabled for a category ('agents' or 'tasks')."""
-    from database import SessionLocal
-    from models import SystemConfig
-    db = SessionLocal()
-    try:
-        row = db.get(SystemConfig, f"notifications_{category}_enabled")
-        return row.value != "0" if row else True
-    finally:
-        db.close()
+# Per-device flag that gates each channel.  Channels not listed here
+# (permission, notify_at, attention, test) reach every subscription.
+# The old global SystemConfig flags (notifications_*_enabled) gate nothing.
+CHANNEL_DEVICE_FLAG = {
+    "message": "agents_enabled",
+    "task_complete": "tasks_enabled",
+}
 
 
-def send_push_notification(title: str, body: str, url: str = "/") -> None:
-    """Send a push notification via Web Push."""
-    _send_webpush(title, body, url)
+def send_push_notification(title: str, body: str, url: str = "/",
+                           channel: str | None = None) -> None:
+    """Send a push notification via Web Push to the devices that want *channel*."""
+    _send_webpush(title, body, url, channel=channel)
+
+
+def send_test_push(endpoint: str) -> int:
+    """Send the bell's confirmation push to one subscription only.
+
+    Ignores that device's flags: the user just asked for it.  Returns the
+    number of pushes queued (0 if Web Push is unavailable or the endpoint
+    is unknown).
+    """
+    return _send_webpush(
+        "Xylocopa", "Notifications are on for this device", "/",
+        channel="test", endpoint=endpoint,
+    )
 
 
 def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None:
@@ -73,7 +85,10 @@ def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None
     }
     vapid_claims = {"sub": VAPID_SUBJECT, "aud": aud}
 
+    sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    accepted = False
     expired = False
+    status = None
     try:
         webpush(
             subscription_info=subscription_info,
@@ -81,13 +96,16 @@ def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None
             vapid_private_key=VAPID_PRIVATE_KEY,
             vapid_claims=vapid_claims,
         )
+        accepted = True
         logger.info(
             "push send: nid=%s sub=%s host=%s ok",
             nid, sub_id, parsed.netloc,
         )
     except WebPushException as e:
-        if hasattr(e, "response") and e.response is not None \
-                and e.response.status_code == 410:
+        # Only the push service saying the subscription is gone (404/410)
+        # deletes it; silence from the device never does.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in (404, 410):
             expired = True
         else:
             logger.warning("Push failed for %s: %s", endpoint[:60], e)
@@ -95,6 +113,28 @@ def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None
         logger.debug("Push network error for %s", endpoint[:60], exc_info=True)
     except Exception:
         logger.warning("Push error for %s", endpoint[:60], exc_info=True)
+
+    if accepted:
+        # Diagnostic counter, reset by /api/push/ack.  Skip it when an ack
+        # already landed after this send started (ack beat our 201).
+        from database import SessionLocal
+        from models import PushSubscription
+        from sqlalchemy import or_
+        _db = SessionLocal()
+        try:
+            _db.query(PushSubscription).filter(
+                PushSubscription.id == sub_id,
+                or_(PushSubscription.last_ack_at.is_(None),
+                    PushSubscription.last_ack_at < sent_at),
+            ).update(
+                {PushSubscription.unacked_sends: PushSubscription.unacked_sends + 1},
+                synchronize_session=False,
+            )
+            _db.commit()
+        except Exception:
+            logger.debug("unacked_sends bump failed for sub=%s", sub_id, exc_info=True)
+        finally:
+            _db.close()
 
     if expired:
         from database import SessionLocal
@@ -105,7 +145,8 @@ def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None
                 PushSubscription.id == sub_id
             ).delete(synchronize_session=False)
             _db.commit()
-            logger.info("Removed expired push subscription id=%s", sub_id)
+            logger.info("Removed expired push subscription id=%s (push service %s)",
+                        sub_id, status)
         except Exception:
             logger.warning(
                 "Failed to delete expired sub id=%s", sub_id, exc_info=True,
@@ -114,32 +155,42 @@ def _send_one(sub_data: dict, title: str, body: str, url: str, nid: str) -> None
             _db.close()
 
 
-def _send_webpush(title: str, body: str, url: str = "/") -> None:
-    """Fire-and-forget fanout to all subscribed browsers.
+def _send_webpush(title: str, body: str, url: str = "/",
+                  channel: str | None = None,
+                  endpoint: str | None = None) -> int:
+    """Fire-and-forget fanout to the subscribed browsers that want *channel*.
 
-    Reads the subscription list (a short indexed query), materializes
-    each row into a plain dict, and submits one fire-and-forget task
-    per subscription.  Returns before any TLS POST completes, so the
+    Reads the subscription list (a short indexed query), keeps the rows
+    whose per-device flag allows *channel* (or only *endpoint*, if given),
+    materializes each into a plain dict, and submits one fire-and-forget
+    task per subscription.  Returns before any TLS POST completes, so the
     caller (typically the sync-engine coroutine) is not blocked by
     push RTTs and subsequent WebSocket emits can proceed immediately.
+    Returns the number of pushes queued.
     """
     if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
-        return
+        return 0
 
     try:
         import pywebpush  # noqa: F401 — presence check only
     except ImportError:
         logger.debug("pywebpush not installed — skipping web push")
-        return
+        return 0
 
     from database import SessionLocal
     from models import PushSubscription
 
+    flag = CHANNEL_DEVICE_FLAG.get(channel or "")
     db = SessionLocal()
     try:
         subs = db.query(PushSubscription).all()
         if not subs:
-            return
+            return 0
+        total = len(subs)
+        if endpoint is not None:
+            subs = [s for s in subs if s.endpoint == endpoint]
+        elif flag:
+            subs = [s for s in subs if getattr(s, flag)]
         sub_data_list = [
             {
                 "id": s.id,
@@ -155,11 +206,15 @@ def _send_webpush(title: str, body: str, url: str = "/") -> None:
     # Diagnostic correlation id — SW echoes this back via /api/push/ack
     nid = secrets.token_hex(4)
     logger.info(
-        "push send: nid=%s subs=%d title=%r", nid, len(sub_data_list), title[:60],
+        "push send: nid=%s subs=%d (of %d) channel=%s title=%r",
+        nid, len(sub_data_list), total, channel or "-", title[:60],
     )
+    queued = 0
     for sd in sub_data_list:
         try:
             _push_pool.submit(_send_one, sd, title, body, url, nid)
+            queued += 1
         except RuntimeError:
             # Pool already shut down (process exiting) — drop silently.
             logger.debug("push pool shut down, dropping push to sub=%s", sd["id"])
+    return queued
