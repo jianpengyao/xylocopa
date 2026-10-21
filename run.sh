@@ -8,6 +8,7 @@
 #   ./run.sh logs                  — follow pm2 logs
 #   ./run.sh startup               — enable auto-start on boot
 #   ./run.sh build-frontend-if-stale — rebuild dist/ only if src is newer
+#   ./run.sh reset-password [...]  — break-glass web UI password reset (--help)
 
 set -euo pipefail
 
@@ -20,6 +21,17 @@ mkdir -p "$SCRIPT_DIR/data" "$SCRIPT_DIR/logs" "$SCRIPT_DIR/backups" "$SCRIPT_DI
 # ── Load .env for variable resolution ─────────────────────────────────
 if [ -f "$SCRIPT_DIR/.env" ]; then
     set -a; source "$SCRIPT_DIR/.env"; set +a
+fi
+
+# ── Break-glass password reset ───────────────────────────────────────
+# Dispatched before the systemd/pm2 steps so it works with only the venv
+# (server running or stopped). See orchestrator/reset_password.py.
+if [ "${1:-}" = "reset-password" ]; then
+    shift
+    PY="$SCRIPT_DIR/.venv/bin/python"
+    [ -x "$PY" ] || PY=python3
+    cd "$SCRIPT_DIR/orchestrator"
+    exec "$PY" reset_password.py "$@"
 fi
 
 # ── Migrate from systemd → pm2 (one-time, Linux only) ────────────────
@@ -195,7 +207,7 @@ UNIT
         echo "Xylocopa running at https://localhost:${FPORT}"
         ;;
     *)
-        echo "Usage: ./run.sh [start|stop|restart|status|logs|startup|build-frontend-if-stale]"
+        echo "Usage: ./run.sh [start|stop|restart|status|logs|startup|build-frontend-if-stale|reset-password]"
         exit 1
         ;;
 esac
