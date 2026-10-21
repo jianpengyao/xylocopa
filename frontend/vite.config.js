@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { runtimeCaching } from './sw-runtime-caching.js'
-import { refuseHookPaths } from './proxy-bypass.js'
+import { proxyBypass, redactUrl } from './proxy-bypass.js'
 
 // Load self-signed certs for HTTPS (needed for microphone access over LAN)
 const certsDir = path.resolve(__dirname, '../certs')
@@ -115,7 +115,9 @@ export default defineConfig({
             const t0 = Date.now()
             // Read now: over HTTP/2 the socket proxy is gone by 'finish'.
             const ip = (req.socket?.remoteAddress || '?').replace(/^::ffff:/, '')
-            const url = req.originalUrl || req.url
+            // Media ?token= / WS ?ticket= / preview + probe path capabilities
+            // never reach the log.
+            const url = redactUrl(req.originalUrl || req.url)
             let logged = false
             // 'close' too: an aborted request (the probes' 8s abort) never
             // emits 'finish'.
@@ -149,10 +151,17 @@ export default defineConfig({
       // intervention. Combined with skipWaiting + no NavigationRoute below,
       // tabs see fresh HTML on next navigation without the "zombie SW
       // serving stale cached index.html" failure mode that made cert-regen
-      // recovery require website-data clearing. Note: in this mode the
-      // plugin's register code reloads open pages once an updated SW
-      // activates (vite-plugin-pwa client/build/register.js); the swState
-      // gate in App.jsx exists for that reload.
+      // recovery require website-data clearing.
+      //
+      // injectRegister: false — the app registers the SW itself
+      // (src/lib/swUpdate.js, called from main.jsx) instead of through
+      // virtual:pwa-register, whose register code reloads open pages the
+      // moment an updated SW activates (vite-plugin-pwa
+      // client/build/register.js), even mid-password on /login. Ours defers
+      // that reload while the user is on /login or typing. registerType now
+      // only feeds that unused virtual module (and, with injectRegister
+      // false, no longer implies skipWaiting / clientsClaim), so both stay
+      // explicit below.
       //
       // No Workbox route matches navigations or /api requests (see
       // sw-runtime-caching.js for why: a NetworkOnly route turned every
@@ -161,6 +170,7 @@ export default defineConfig({
       // Navigations are passed through by public/sw-navigation.js, which
       // answers with its offline page when the network fetch fails.
       registerType: 'autoUpdate',
+      injectRegister: false,
       devOptions: { enabled: true },
       workbox: {
         skipWaiting: true,
@@ -225,8 +235,12 @@ export default defineConfig({
       // bypass on EVERY entry: /api/hooks/* (agent hook channel, loopback
       // only) → 404. Keys match the raw URL by prefix but the proxy resolves
       // dot segments, so /ws/../api/hooks/x would reach the hooks otherwise.
-      '/api': { target: 'http://localhost:8080', ws: true, bypass: refuseHookPaths },
-      '/ws': { target: 'ws://localhost:8080', ws: true, bypass: refuseHookPaths },
+      // It also overwrites X-Forwarded-For/-Proto/-Host with the real peer
+      // (the backend's login limiter keys on it). Targets are the IPv4
+      // literal: uvicorn trusts forwarded headers only from 127.0.0.1, and a
+      // "localhost" that resolved to ::1 would silently drop them.
+      '/api': { target: 'http://127.0.0.1:8080', ws: true, bypass: proxyBypass },
+      '/ws': { target: 'ws://127.0.0.1:8080', ws: true, bypass: proxyBypass },
     },
   },
   preview: {
@@ -243,8 +257,12 @@ export default defineConfig({
       // bypass on EVERY entry: /api/hooks/* (agent hook channel, loopback
       // only) → 404. Keys match the raw URL by prefix but the proxy resolves
       // dot segments, so /ws/../api/hooks/x would reach the hooks otherwise.
-      '/api': { target: 'http://localhost:8080', ws: true, bypass: refuseHookPaths },
-      '/ws': { target: 'ws://localhost:8080', ws: true, bypass: refuseHookPaths },
+      // It also overwrites X-Forwarded-For/-Proto/-Host with the real peer
+      // (the backend's login limiter keys on it). Targets are the IPv4
+      // literal: uvicorn trusts forwarded headers only from 127.0.0.1, and a
+      // "localhost" that resolved to ::1 would silently drop them.
+      '/api': { target: 'http://127.0.0.1:8080', ws: true, bypass: proxyBypass },
+      '/ws': { target: 'ws://127.0.0.1:8080', ws: true, bypass: proxyBypass },
     },
   },
   optimizeDeps: {
