@@ -4,7 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import "katex/dist/katex.min.css";
 import "./index.css";
 import App from "./App.jsx";
-import { registerSW } from "virtual:pwa-register";
+import { registerServiceWorker } from "./lib/swUpdate";
 import { setupFrameLogger } from "./lib/frameLogger";
 import { prefetchHeavyChunks } from "./lib/prefetchChunks";
 import { applyEinkModeFromStorage } from "./lib/einkMode";
@@ -106,12 +106,11 @@ prefetchHeavyChunks();
   });
   if ("serviceWorker" in navigator) {
     // New SW activation is only traced here; this listener does NOT force
-    // a page reload (it used to, on every controllerchange). Note that
-    // registerSW below (registerType 'autoUpdate') still reloads open pages
-    // once an updated SW activates — see vite-plugin-pwa
-    // client/build/register.js and the swState gate in App.jsx. Stale
-    // in-memory chunk refs are caught by the chunk-recovery net in
-    // index.html (capture-phase asset 404 + dynamic-import failure).
+    // a page reload. The update reload lives in lib/swUpdate.js, which
+    // defers it while the user is on /login or typing (see also the swState
+    // gate in App.jsx). Stale in-memory chunk refs are caught by the
+    // chunk-recovery net in index.html (capture-phase asset 404 +
+    // dynamic-import failure).
     let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       beacon({ action: "reload-trace", reason: "sw-controllerchange", hadController });
@@ -126,22 +125,12 @@ prefetchHeavyChunks();
   } catch { /* performance API may be restricted */ }
 })();
 
-// Register VitePWA service worker with autoUpdate.
-// Precaches all static assets (JS/CSS/HTML with content hashes).
-if ("serviceWorker" in navigator) {
-  registerSW({
-    onRegisteredSW(swUrl, registration) {
-      if (!registration) return;
-      // Check for SW updates every 30 minutes (background)
-      setInterval(() => { registration.update(); }, 30 * 60 * 1000);
-      // Also check on every tab/app focus — catches rebuilds immediately
-      // when user switches back to the app (mobile PWA, iPad, etc.)
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") registration.update();
-      });
-    },
-  });
-}
+// Register the VitePWA-generated service worker ourselves (vite.config.js:
+// injectRegister false). Precaches all static assets (JS/CSS with content
+// hashes). Update checks every 30 min and on every foreground; an update
+// that takes over reloads the page, but never while the user is on /login
+// or typing (lib/swUpdate.js).
+registerServiceWorker({ swUrl: import.meta.env.DEV ? "/dev-sw.js?dev-sw" : "/sw.js" });
 
 // Global error handlers — catch async/event-handler errors that React
 // error boundaries cannot intercept.  Shows a raw DOM toast so it works
