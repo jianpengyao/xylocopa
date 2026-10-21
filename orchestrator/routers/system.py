@@ -1,9 +1,11 @@
 """System routes — health, stats, storage, backups, restart, notifications."""
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -63,13 +65,29 @@ def _check_reload_storm(ip: str, reason: str, path: str) -> None:
 
 # ---- Certificate download (for mobile trust setup) ----
 
+# SAN hostname for /api/cert/regenerate: alphanumeric at both ends, so it
+# can never start with "-" and be read by mkcert as a flag.
+_CERT_DNS_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+
+
+def _is_ip_address(value: str) -> bool:
+    # No IPv6 zone IDs ("fe80::1%eth0"): ipaddress accepts almost any text
+    # after the "%", and mkcert rejects them all anyway.
+    if "%" in value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 @router.get("/api/cert/info")
 async def cert_info():
     """Return just the current cert's SAN (IPs + DNS).  Used by /cert-guide
     to tell the user whether their current address is already covered —
     avoids the "click Regenerate not knowing if anything will happen"
     UX gap. Minimal on purpose: no host detection, no diff, no enrichment."""
-    import re
     import subprocess
 
     cert_path = os.path.normpath(
@@ -103,12 +121,13 @@ async def cert_regenerate(request: Request):
     clients out of TLS. Same mkcert CA is preserved, so any client that
     trusts the CA root sees the new leaf as valid automatically.
     """
-    import re
     import subprocess
 
     try:
         body = await request.json()
     except Exception:
+        body = {}
+    if not isinstance(body, dict):
         body = {}
     ips = body.get("ips") or []
     dns = body.get("dns") or []
@@ -119,11 +138,15 @@ async def cert_regenerate(request: Request):
             status_code=400,
             detail="ips list cannot be empty — cert needs at least one explicit IP",
         )
+    # Every name ends up as an mkcert argv entry: a leading "-" would be
+    # parsed as a flag (e.g. "-cert-file=<path>" overwrites an arbitrary
+    # file). The hostname pattern can't start with "-", IPs must parse, and
+    # the argv below also puts "--" before the names.
     for ip in ips:
-        if not isinstance(ip, str) or not re.match(r"^[0-9.]+$", ip):
+        if not isinstance(ip, str) or not _is_ip_address(ip):
             raise HTTPException(status_code=400, detail=f"invalid IP: {ip!r}")
     for name in dns:
-        if not isinstance(name, str) or not re.match(r"^[\w.\-]+$", name):
+        if not isinstance(name, str) or not _CERT_DNS_NAME_RE.fullmatch(name):
             raise HTTPException(status_code=400, detail=f"invalid DNS name: {name!r}")
 
     certs_dir = os.path.normpath(
@@ -162,7 +185,7 @@ async def cert_regenerate(request: Request):
     # 127.0.0.1 always included so server-internal callers (vite preview
     # proxy → backend) keep working regardless of what the user typed.
     mkcert_args = [
-        "mkcert", "-cert-file", cert_path, "-key-file", key_path,
+        "mkcert", "-cert-file", cert_path, "-key-file", key_path, "--",
         *dns, "127.0.0.1", *ips,
     ]
     try:
