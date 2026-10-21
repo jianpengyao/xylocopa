@@ -173,6 +173,18 @@ async def _ensure_ios_compat_mp4(full_path: str) -> str:
             return full_path
 
 
+def _video_thumb_cmd(src: str, out: str, width: int, square: bool) -> list[str]:
+    # -ss 0.5 picks an early non-black frame; scale caps the width (or fills
+    # a width² square, center-cropped, for tiles). -f image2 forces JPEG
+    # since a .tmp output suffix defeats ffmpeg's extension detection.
+    w = int(width)
+    vf = (f"scale={w}:{w}:force_original_aspect_ratio=increase,crop={w}:{w}"
+          if square else f"scale='min({w},iw)':-2")
+    return ["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5",
+            "-i", src, "-frames:v", "1", "-vf", vf,
+            "-q:v", "4", "-f", "image2", out]
+
+
 async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_W,
                               square: bool = False) -> str | None:
     """Extract a poster frame from a video file via ffmpeg, cache as JPEG.
@@ -189,17 +201,7 @@ async def _extract_video_thumb(src: str, dest: str, width: int = _THUMB_DEFAULT_
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             tmp = dest + ".tmp"
-            # -ss 0.5 picks an early non-black frame; scale caps the width
-            # (or fills a width² square, center-cropped, for tiles).
-            # -f image2 forces JPEG container since the .tmp suffix on the
-            # output path defeats ffmpeg's extension-based format detection.
-            w = int(width)
-            vf = (f"scale={w}:{w}:force_original_aspect_ratio=increase,crop={w}:{w}"
-                  if square else f"scale='min({w},iw)':-2")
-            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.5",
-                   "-i", src, "-frames:v", "1",
-                   "-vf", vf,
-                   "-q:v", "4", "-f", "image2", tmp]
+            cmd = _video_thumb_cmd(src, tmp, width, square)
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             _, stderr = await proc.communicate()
@@ -435,6 +437,50 @@ async def _image_thumb(src: str, dest: str, width: int, square: bool = False) ->
             return None
 
 
+def _thumb_cache_path(full_path: str, tile: bool) -> str:
+    """.thumbcache/<filename>.thumb.jpg next to the original
+    (<filename>.tile400.thumb.jpg for the grid tile)."""
+    suffix = f".tile{_THUMB_TILE}.thumb.jpg" if tile else ".thumb.jpg"
+    return os.path.join(os.path.dirname(full_path), ".thumbcache",
+                        os.path.basename(full_path) + suffix)
+
+
+def warm_tile_thumb(full_path: str) -> bool:
+    """Render the grid-tile thumbnail before anyone asks for it, so a big
+    image / video doesn't stall its tile on first view. Blocking — for
+    background threads. Returns True if a thumbnail was written; raises on
+    decode errors (the caller logs and moves on)."""
+    ext = os.path.splitext(full_path)[1].lower()
+    if ext not in _THUMB_IMAGE_EXTS and ext not in _THUMB_VIDEO_EXTS:
+        return False
+    dest = _thumb_cache_path(full_path, tile=True)
+    try:
+        if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(full_path):
+            return False
+    except OSError:
+        return False
+    if ext in _THUMB_IMAGE_EXTS:
+        _render_image_thumb(full_path, dest, _THUMB_TILE, square=True)
+        return True
+    if not shutil.which("ffmpeg"):
+        return False
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    # Unique tmp: the request path's video lock is an asyncio one.
+    tmp = f"{dest}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        r = subprocess.run(_video_thumb_cmd(full_path, tmp, _THUMB_TILE, True),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+        if r.returncode != 0 or not os.path.isfile(tmp):
+            return False
+        os.replace(tmp, dest)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 @router.get("/api/thumbs/{project}/{path:path}")
 async def serve_thumbnail(project: str, path: str, request: Request, tile: bool = False,
                           db: Session = Depends(get_db)):
@@ -455,11 +501,7 @@ async def serve_thumbnail(project: str, path: str, request: Request, tile: bool 
         media_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
         return _serve_file_with_range(full_path, media_type, request)
 
-    # Cache path: .thumbcache/<filename>.thumb.jpg next to the original
-    # (<filename>.tile400.thumb.jpg for the grid tile)
-    cache_dir = os.path.join(os.path.dirname(full_path), ".thumbcache")
-    suffix = f".tile{width}.thumb.jpg" if tile else ".thumb.jpg"
-    thumb_file = os.path.join(cache_dir, os.path.basename(full_path) + suffix)
+    thumb_file = _thumb_cache_path(full_path, tile)
 
     try:
         if os.path.isfile(thumb_file) and os.path.getmtime(thumb_file) >= os.path.getmtime(full_path):

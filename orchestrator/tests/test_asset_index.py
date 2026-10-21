@@ -31,6 +31,16 @@ def _touch(path, data=PNG_1PX):
         f.write(data)
 
 
+_real_schedule_tile_warm = ai.schedule_tile_warm
+
+
+@pytest.fixture(autouse=True)
+def _no_background_tile_warm(monkeypatch):
+    """GET /assets and the catch-up worker start a tile warm-up thread on the
+    global SessionLocal, not the test engine — keep it out of these tests."""
+    monkeypatch.setattr(ai, "schedule_tile_warm", lambda projects=None: None)
+
+
 @pytest.fixture()
 def env(tmp_path, db_session):
     """Project 'demo' on disk (+ worktree wt1) and a sibling project 'other'."""
@@ -779,6 +789,60 @@ async def test_thumbnail_sizes_and_exif(client, env):
     assert Image.open(BytesIO(r.content)).size == (100, 200)
     leftovers = [f for f in os.listdir(root / "out" / ".thumbcache") if f.endswith(".tmp")]
     assert leftovers == []
+
+
+def test_warm_tiles_renders_delivered_media_only(env, db_session):
+    from PIL import Image
+    root = env["root"]
+    Image.new("RGB", (800, 400), "red").save(root / "out" / "plot.png")
+    _msg(db_session, f"Saved the chart to {root}/out/plot.png.", minutes=1)
+    _msg(db_session, f"> `Read` {root}/out/seen.png", kind="tool_use", minutes=2)
+    _msg(db_session, "Report: `docs/report.pdf`", minutes=3)
+    _msg(db_session, "other project: other/x.png", minutes=4)
+    ai.catch_up(db_session)
+    cache = root / "out" / ".thumbcache"
+
+    assert ai.warm_tiles({"demo"}, db=db_session) == 1
+    assert (cache / "plot.png.tile400.thumb.jpg").is_file()
+    assert not (cache / "seen.png.tile400.thumb.jpg").exists()   # seen tier: on demand
+    assert not (root / "docs" / ".thumbcache").exists()          # pdf: no tile thumb
+    assert ai.warm_tiles({"demo"}, db=db_session) == 0           # fresh: skipped
+    assert ai.warm_tiles({"other"}, db=db_session) == 0
+
+    os.utime(root / "out" / "plot.png", (2e9, 2e9))              # source edited
+    assert ai.warm_tiles(None, db=db_session) == 1
+
+
+def test_schedule_tile_warm_coalesces(monkeypatch):
+    import threading
+    import time
+    calls = []
+    gate = threading.Event()
+
+    def fake_warm(projects=None, db=None):
+        calls.append(projects)
+        gate.wait(2)
+        return 0
+
+    monkeypatch.setattr(ai, "warm_tiles", fake_warm)
+    _real_schedule_tile_warm({"a"})
+    deadline = time.time() + 2
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    _real_schedule_tile_warm({"b"})
+    _real_schedule_tile_warm({"c"})
+    gate.set()
+    deadline = time.time() + 3
+    while ai._warm_running and time.time() < deadline:
+        time.sleep(0.01)
+    assert calls == [{"a"}, {"b", "c"}]
+
+    calls.clear()
+    _real_schedule_tile_warm()  # all projects
+    deadline = time.time() + 3
+    while (ai._warm_running or not calls) and time.time() < deadline:
+        time.sleep(0.01)
+    assert calls == [None]
 
 
 # ---------------------------------------------------------------------------

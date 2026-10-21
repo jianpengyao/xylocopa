@@ -57,6 +57,7 @@ async def list_project_assets(name: str, include_missing: bool = False,
         from websocket import emit_assets_changed
         for p in sorted(changed):
             asyncio.ensure_future(emit_assets_changed(p))
+        asset_index.schedule_tile_warm(changed)
     return out
 
 

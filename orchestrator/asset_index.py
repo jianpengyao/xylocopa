@@ -17,6 +17,8 @@ dropped — they can't be served anyway.
 Indexing is incremental: a rowid watermark over ``messages`` is stored in
 SystemConfig[STATE_KEY]. ``catch_up`` is sync; async callers use
 ``schedule_catch_up`` (coalesced, worker thread, emits ``assets_changed``).
+Projects that gain refs (and every project at boot) get their grid-tile
+thumbnails pre-rendered by ``schedule_tile_warm``.
 """
 
 import asyncio
@@ -681,6 +683,7 @@ def _sched_worker() -> None:
                 changed = set()
             if changed:
                 _emit_changed(changed)
+                schedule_tile_warm(changed)
             with _sched_lock:
                 if not _sched_dirty:
                     _sched_running = False
@@ -702,11 +705,112 @@ def _emit_changed(projects: set[str]) -> None:
 
 def startup_catch_up() -> None:
     """Boot-time catch-up (background thread). Emits nothing — no clients
-    care at boot, and the GET endpoint catches up on its own."""
+    care at boot, and the GET endpoint catches up on its own. Then warms
+    every project's tile thumbnails."""
     try:
         catch_up()
     except Exception:  # noqa: BLE001
         logger.warning("asset_index: startup catch_up failed", exc_info=True)
+    schedule_tile_warm()
+
+
+# ---------------------------------------------------------------------------
+# Tile thumbnail warm-up
+# ---------------------------------------------------------------------------
+# A tile's first view otherwise waits on Pillow / ffmpeg (~0.2-0.5 s for a
+# big image or video, and a screenful of them queue up). One background
+# thread renders the delivered tier's tiles ahead of time, newest first;
+# the thumbs route still renders whatever isn't warm yet.
+
+_TILE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm", "m4v"})
+_WARM_ALL = "\0all"
+_warm_lock = threading.Lock()
+_warm_running = False
+_warm_queue: set[str] = set()
+
+
+def schedule_tile_warm(projects=None) -> None:
+    """Fire-and-forget tile warm-up for ``projects`` (None = all). Requests
+    made while a run is in flight are queued for one follow-up run. Never
+    raises."""
+    global _warm_running
+    try:
+        with _warm_lock:
+            _warm_queue.update(projects if projects is not None else (_WARM_ALL,))
+            if _warm_running:
+                return
+            _warm_running = True
+        threading.Thread(target=_warm_worker, name="asset-tile-warm", daemon=True).start()
+    except Exception:  # noqa: BLE001
+        logger.debug("asset_index: tile warm schedule failed", exc_info=True)
+        with _warm_lock:
+            _warm_running = False
+
+
+def _warm_worker() -> None:
+    global _warm_running
+    try:
+        while True:
+            with _warm_lock:
+                if not _warm_queue:
+                    _warm_running = False
+                    return
+                batch = set(_warm_queue)
+                _warm_queue.clear()
+            try:
+                n = warm_tiles(None if _WARM_ALL in batch else batch)
+                if n:
+                    logger.info("asset_index: pre-rendered %d tile thumbnails", n)
+            except Exception:  # noqa: BLE001
+                logger.warning("asset_index: tile warm-up failed", exc_info=True)
+    except BaseException:
+        with _warm_lock:
+            _warm_running = False
+        raise
+
+
+def warm_tiles(projects=None, db=None) -> int:
+    """Render missing / stale tile thumbnails for delivered image and video
+    assets of ``projects`` (None = all), newest first. Returns the number
+    written."""
+    from routers.files import warm_tile_thumb
+    own = db is None
+    if own:
+        from database import SessionLocal
+        db = SessionLocal()
+    work: list[tuple[str, str, str]] = []  # (last ref, root, rel path)
+    try:
+        conn = _dbapi(db)
+        sources = sorted(DELIVERED_SOURCES)
+        for name, path in conn.execute("SELECT name, path FROM projects").fetchall():
+            if projects is not None and name not in projects:
+                continue
+            if not path or not os.path.isdir(path):
+                continue
+            root = os.path.realpath(path)
+            for rel, last in conn.execute(
+                "SELECT path, MAX(created_at) FROM asset_refs WHERE project = ? "
+                "AND source IN (%s) GROUP BY path" % ",".join("?" * len(sources)),
+                (name, *sources),
+            ):
+                if _ext_of(rel) in _TILE_EXTS:
+                    work.append((str(last or ""), root, rel))
+    finally:
+        if own:
+            db.close()  # don't hold a connection through minutes of rendering
+    work.sort(reverse=True)
+    done = 0
+    for _, root, rel in work:
+        # realpath: the thumbs route caches under the resolved file's dir
+        full = os.path.realpath(os.path.join(root, rel))
+        if not full.startswith(root + os.sep) or not os.path.isfile(full):
+            continue
+        try:
+            if warm_tile_thumb(full):
+                done += 1
+        except Exception:  # noqa: BLE001 — undecodable file: skip it
+            logger.debug("asset_index: tile warm failed for %s", full, exc_info=True)
+    return done
 
 
 # ---------------------------------------------------------------------------
