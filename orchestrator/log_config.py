@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 
 # Resolve LOG_DIR relative to project root (one level up from this file)
@@ -16,6 +17,56 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # and the kept-7-days backlog to half a GB.
 _LOG_MAX_BYTES = 50 * 1024 * 1024
 _LOG_BACKUP_COUNT = 4
+
+
+# Credentials that ride in URLs and would otherwise land in uvicorn's access
+# and WebSocket lines: media tokens / WS tickets (?token=, ?ticket=), preview
+# tokens and port-proxy signatures (/api/preview/t|p/<seg>), probe trigger
+# tokens, and the Dropbox OAuth code/state on its callback.
+_REDACT_PATTERNS = (
+    re.compile(r'([?&](?:token|ticket)=)[^&\s"]+'),
+    re.compile(r'(/api/preview/[tp]/)[^/\s"?]+'),
+    re.compile(r'(/api/probe-trigger/)[^/\s"?]+'),
+)
+_DROPBOX_CALLBACK = "/api/dropbox/callback"
+_DROPBOX_PARAMS = re.compile(r'([?&](?:code|state)=)[^&\s"]+')
+
+
+def redact_secrets(text: str) -> str:
+    """Replace URL-borne credentials in a log string with <redacted>."""
+    for rx in _REDACT_PATTERNS:
+        text = rx.sub(r"\1<redacted>", text)
+    if _DROPBOX_CALLBACK in text:
+        text = _DROPBOX_PARAMS.sub(r"\1<redacted>", text)
+    return text
+
+
+class RedactSecretsFilter(logging.Filter):
+    """Rewrites str args (or the bare message) of a record. Never drops one."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.args, tuple) and record.args:
+                record.args = tuple(redact_secrets(a) if isinstance(a, str) else a
+                                    for a in record.args)
+            elif not record.args and isinstance(record.msg, str):
+                record.msg = redact_secrets(record.msg)
+        except Exception:
+            pass
+        return True
+
+
+# uvicorn logs request lines on these two (access: HTTP; error: WebSocket
+# handshakes). Its dictConfig runs before main is imported, so attaching here
+# survives it.
+_REDACTED_LOGGERS = ("uvicorn.access", "uvicorn.error")
+
+
+def install_redaction() -> None:
+    for name in _REDACTED_LOGGERS:
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, RedactSecretsFilter) for f in lg.filters):
+            lg.addFilter(RedactSecretsFilter())
 
 
 def setup_logging():
@@ -45,6 +96,8 @@ def setup_logging():
 
     # Quiet down noisy libraries
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    install_redaction()
 
     logging.info("Logging configured: level=%s, file=%s, max=%dMB×%d",
                  LOG_LEVEL, log_file,
