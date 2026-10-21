@@ -18,13 +18,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from config import BACKEND_HOST, CORS_ORIGINS, PORT, PROJECT_CONFIGS_PATH, CC_MODEL, VALID_MODELS, XY_ALLOWED_HOSTS
 from database import SessionLocal, get_db, init_db
 from log_config import setup_logging
 from models import Agent, Project, Task, TaskStatus, AgentStatus
-from auth import get_jwt_secret, get_password_hash, verify_token
+from auth import auth_disabled, auth_error_response, get_password_hash, normalize_ip
+import auth_store
 from request_guard import RequestGuardMiddleware
 
 setup_logging()
@@ -314,6 +316,13 @@ async def lifespan(app: FastAPI):
 
     init_db()
     logger.info("Database initialized")
+    # Server-side auth tables (auth_store.py, own metadata). Also created
+    # lazily on first use; doing it here keeps the first request fast.
+    try:
+        from database import engine as _db_engine
+        auth_store.ensure_auth_schema(_db_engine)
+    except Exception:
+        logger.exception("Auth schema ensure failed (retried lazily on first use)")
 
     # One-shot migration: move legacy pre-sent DB rows to pre_sent zone.
     # Pre-delivery web/task/plan_continue messages no longer own DB rows. Any
@@ -776,9 +785,14 @@ async def hook_request_logger(request: Request, call_next):
 # startswith("/api/cert") once also exempted POST /api/cert/regenerate.
 # methods=None allows any method. tests/test_auth_exempt.py pins the public
 # route set this produces, so widening it fails CI until reviewed.
+# /api/auth/ is NOT a family: sessions, ws-ticket, media-token and
+# change-password under it need a session.
 _GET_HEAD = frozenset({"GET", "HEAD"})
 _AUTH_EXEMPT = (
-    ("/api/auth/", None),              # login / set-password / check
+    ("/api/auth/check", None),         # never 401; reports the session state
+    ("/api/auth/login", None),
+    ("/api/auth/set-password", None),  # first run only
+    ("/api/auth/logout", None),        # idempotent, works on an idle session
     ("/api/health", None),
     ("/api/cert", _GET_HEAD),          # CA download for mobile trust setup
     ("/api/cert/info", _GET_HEAD),
@@ -794,60 +808,108 @@ _AUTH_EXEMPT = (
     ("/api/dropbox/callback", None),
 )
 
+# Exempt routes that parse a body: with auth on, a body-carrying request must
+# be application/json (a cross-site "simple" POST can't send that without a
+# preflight). Every legitimate caller already does. Same "/" prefix rule.
+_JSON_ONLY_EXEMPT = (
+    "/api/auth/login",
+    "/api/auth/set-password",
+    "/api/debug/auth-diag",
+    "/api/push/ack",
+    "/api/hooks/",
+)
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# The only routes a ?token= (scope=media JWT) authenticates, GET/HEAD only.
+_MEDIA_PREFIXES = ("/api/files/", "/api/thumbs/", "/api/uploads/")
+
+# /api/auth/activity always counts as user activity (the throttled ping).
+_ACTIVITY_PATH = "/api/auth/activity"
+
+
+def _matches(entry: str, path: str) -> bool:
+    return path.startswith(entry) if entry.endswith("/") else path == entry
+
 
 def _is_auth_exempt(method: str, path: str) -> bool:
     for entry, methods in _AUTH_EXEMPT:
-        matched = path.startswith(entry) if entry.endswith("/") else path == entry
-        if matched and (methods is None or method in methods):
+        if _matches(entry, path) and (methods is None or method in methods):
             return True
     return False
 
 
+def _is_json_only(path: str) -> bool:
+    return any(_matches(entry, path) for entry in _JSON_ONLY_EXEMPT)
+
+
+def _is_json_content_type(value: str) -> bool:
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Reject unauthenticated requests to protected endpoints."""
-    # Allow DISABLE_AUTH=1 for development/testing
-    if os.environ.get("DISABLE_AUTH", "").strip() in ("1", "true", "yes"):
+    """Reject unauthenticated requests to protected endpoints.
+
+    Session failures answer 401 + X-Auth-Reason (missing / invalid / expired /
+    revoked / idle); the frontend logs out only on those. The resolved
+    credential lands on request.state.auth (auth_store.AuthResult, or None
+    while no password is set)."""
+    # Allow DISABLE_AUTH=1 for development/testing — everything below,
+    # including the JSON-only and media rules, is inert then.
+    if auth_disabled():
         return await call_next(request)
 
     # The path the router dispatches on. request.url.path is rebuilt from the
     # Host header, so a "?" or "#" smuggled into Host would shorten it to a
     # "non-API" path and skip auth for a route that still runs.
     path = request.scope["path"]
+    method = request.method
 
     # Skip auth for exempt paths and non-API static assets
-    if _is_auth_exempt(request.method, path):
+    if _is_auth_exempt(method, path):
+        if (method in _BODY_METHODS and _is_json_only(path)
+                and not _is_json_content_type(request.headers.get("content-type", ""))):
+            return JSONResponse({"detail": "Content-Type must be application/json"}, status_code=415,
+                                headers={"Cache-Control": "no-store"})
         return await call_next(request)
     if not path.startswith("/api/"):
         return await call_next(request)
 
-    # Check for password — if none set, allow all requests (first-time setup)
+    url_token = bool(request.query_params.get("token"))
+    ip = normalize_ip(request.client.host) if request.client else None
+    result = None
     db = SessionLocal()
     try:
-        pw_hash = get_password_hash(db)
-        if pw_hash is None:
-            return await call_next(request)
-
-        # Verify bearer token (header) or query param (for <img src="..."> etc.)
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        else:
-            token = request.query_params.get("token", "")
-
-        if not token:
-            # Skip noisy debug endpoints to keep logs clean
-            if path != "/api/debug/frontend-state":
-                logger.info("AUTH_REJECT no_token: %s %s", request.method, path)
-            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
-
-        jwt_secret = get_jwt_secret(db)
-        if not verify_token(token, jwt_secret):
-            logger.info("AUTH_REJECT bad_token: %s %s (token=%s…)", request.method, path, token[:16])
-            return JSONResponse({"detail": "Token expired or invalid"}, status_code=401)
+        # No password yet → allow all (first-time setup)
+        if get_password_hash(db) is not None:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                activity = (request.headers.get("x-user-activity") == "1"
+                            or path == _ACTIVITY_PATH)
+                result = auth_store.authenticate(
+                    db, auth_header[7:].strip(), activity=activity, ip=ip)
+            elif method in _GET_HEAD and path.startswith(_MEDIA_PREFIXES) and url_token:
+                result = auth_store.authenticate_media(db, request.query_params.get("token"))
+            else:
+                # A ?token= anywhere else is ignored: session tokens never
+                # ride in URLs.
+                result = auth_store.AuthResult(ok=False, reason="missing")
+    except SQLAlchemyError:
+        logger.exception("AUTH_STORE_ERROR: %s %s", method, path)
+        return JSONResponse({"detail": "Auth store unavailable"}, status_code=503,
+                            headers={"Cache-Control": "no-store"})
     finally:
         db.close()
 
+    if result is not None and not result.ok:
+        # Skip noisy debug endpoints to keep logs clean. Never log token
+        # material.
+        if path != "/api/debug/frontend-state":
+            logger.info("AUTH_REJECT reason=%s %s %s ip=%s%s", result.reason, method, path, ip,
+                        " url_token=1" if url_token and result.reason == "missing" else "")
+        return auth_error_response(result.reason)
+
+    request.state.auth = result
     return await call_next(request)
 
 
@@ -876,7 +938,7 @@ app.websocket("/ws/status")(websocket_endpoint)
 
 # ---- Include all routers ----
 
-from routers.auth import router as auth_router
+from routers.auth import router as auth_router, settings_router as auth_settings_router
 from routers.system import router as system_router
 from routers.dropbox import router as dropbox_router
 from routers.projects import router as projects_router
@@ -898,6 +960,7 @@ from routers.terminal import router as terminal_router
 from routers.attention import router as attention_router
 
 app.include_router(auth_router)
+app.include_router(auth_settings_router)
 app.include_router(system_router)
 app.include_router(dropbox_router)
 app.include_router(projects_router)

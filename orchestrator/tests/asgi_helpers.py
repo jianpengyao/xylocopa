@@ -11,11 +11,14 @@ from urllib.parse import unquote
 import anyio
 
 
-async def asgi_request(app, method: str, raw_path: str, headers=(), body: bytes = b""):
+async def asgi_request(app, method: str, raw_path: str, headers=(), body: bytes = b"",
+                       client=("127.0.0.1", 50000)):
     """Send one HTTP request straight into an ASGI app.
 
     ``headers`` is a sequence of (name, value) pairs; Host is only sent when
-    listed. Returns (status, headers-dict, body-bytes).
+    listed. ``client`` is the (host, port) peer the app sees (what uvicorn
+    puts in scope["client"] after proxy-header handling). Returns (status,
+    headers-dict, body-bytes).
     """
     path, _, query = raw_path.partition("?")
     scope = {
@@ -29,7 +32,7 @@ async def asgi_request(app, method: str, raw_path: str, headers=(), body: bytes 
         "root_path": "",
         "query_string": query.encode("latin-1"),
         "headers": [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in headers],
-        "client": ("127.0.0.1", 50000),
+        "client": client,
         "server": ("127.0.0.1", 8080),
     }
     pending = [{"type": "http.request", "body": body, "more_body": False}]

@@ -6,11 +6,12 @@ Security model:
   query param) so relative subresource references (./app.js, ./data.json)
   inherit it automatically inside the iframe.
 - Preview-scoped tokens are rejected by the main auth middleware
-  (auth.verify_token refuses tokens with a "scope" claim), so a leaked
-  preview URL never grants general API access.
+  (auth_store.authenticate refuses a JWT with a "scope" claim as Bearer),
+  so a leaked preview URL never grants general API access.
 - Every response carries a CSP `sandbox` header, forcing an opaque origin
   even when a preview URL is opened directly in a new tab — agent-written JS
-  can never read the app origin's localStorage (where the session JWT lives).
+  can never read the app origin's localStorage (where the opaque session
+  token lives).
 """
 
 import hashlib
@@ -25,6 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from starlette.websockets import WebSocketDisconnect
 
+import auth_store
 from auth import create_token, decode_token, get_jwt_secret
 from config import PORT
 from database import SessionLocal, get_db
@@ -187,6 +189,9 @@ async def serve_preview_file(token: str, project: str, path: str,
     """
     claims = decode_token(token, get_jwt_secret(db))
     if not claims or claims.get("scope") != "preview":
+        raise HTTPException(status_code=401, detail="Invalid preview token")
+    # Cut off by change-password / revoke-others / reset-password.
+    if claims.get("iat", 0) < auth_store.get_not_before(db):
         raise HTTPException(status_code=401, detail="Invalid preview token")
     if claims.get("project") != project:
         raise HTTPException(status_code=403, detail="Token not valid for this project")

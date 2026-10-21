@@ -11,6 +11,7 @@ side effects.
 """
 
 import re
+import time
 
 import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -18,8 +19,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.responses import PlainTextResponse
 
+import auth_store
+import database
 import main
-from auth import create_token, get_jwt_secret, set_password_hash
+import routers.preview
+from auth import create_token, get_jwt_secret, set_config, set_password_hash
 from config import PORT
 from models import Base
 from request_guard import RequestGuardMiddleware
@@ -28,11 +32,12 @@ from tests.asgi_helpers import asgi_request
 # Reviewed public (method, route path) set: reachable WITHOUT a token once
 # auth is on. Extending it is a security decision — review before adding.
 PUBLIC_ROUTES = {
-    # login / first-time setup
+    # login / first-time setup (exact paths: every other /api/auth/* route,
+    # change-password included, needs a session)
     ("POST", "/api/auth/check"),
     ("POST", "/api/auth/set-password"),
     ("POST", "/api/auth/login"),
-    ("POST", "/api/auth/change-password"),
+    ("POST", "/api/auth/logout"),
     ("GET", "/api/health"),
     # mobile trust setup (GET only — POST /api/cert/regenerate needs auth)
     ("GET", "/api/cert"),
@@ -75,6 +80,9 @@ WEBSOCKET_ROUTES = {
 # Loopback on the backend port: what agents' hook calls carry (request_guard
 # refuses /api/hooks/* under any other Host).
 HOST = [("host", f"localhost:{PORT}")]
+# Exempt routes that parse a body are JSON-only with auth on; every
+# legitimate caller sends this, so the walk does too.
+JSON = [("content-type", "application/json")]
 
 
 @pytest.fixture(scope="module")
@@ -102,6 +110,8 @@ def auth_on(_password_db, monkeypatch):
 
     monkeypatch.delenv("DISABLE_AUTH", raising=False)
     monkeypatch.setattr(main, "SessionLocal", Session)
+    monkeypatch.setattr(database, "SessionLocal", Session)
+    monkeypatch.setattr(routers.preview, "SessionLocal", Session)
     monkeypatch.setattr(main.app.router, "middleware_stack", reached)
     return secret
 
@@ -123,7 +133,7 @@ async def test_every_api_route_requires_auth_except_public_set(auth_on):
     seen, wrong = set(), []
     for method, path in _api_routes():
         seen.add((method, path))
-        status, _, _ = await asgi_request(main.app, method, _concrete(path), HOST)
+        status, _, _ = await asgi_request(main.app, method, _concrete(path), HOST + JSON)
         expected = 200 if (method, path) in PUBLIC_ROUTES else 401
         if status != expected:
             wrong.append(f"{method} {path}: {status} (expected {expected})")
@@ -187,7 +197,7 @@ def test_websocket_routes_are_known():
     ("GET", "/api/agents", 401),
 ])
 async def test_exempt_matching_edge_cases(auth_on, method, raw_path, expected):
-    status, _, _ = await asgi_request(main.app, method, raw_path, HOST)
+    status, _, _ = await asgi_request(main.app, method, raw_path, HOST + JSON)
     assert status == expected
 
 
@@ -218,14 +228,37 @@ async def test_auth_decides_on_routed_path_not_host(auth_on, monkeypatch, host):
 
 
 @pytest.mark.anyio
-async def test_valid_session_token_passes(auth_on):
-    token = create_token(auth_on)
-    status, _, body = await asgi_request(
-        main.app, "POST", "/api/cert/regenerate", HOST + [("authorization", f"Bearer {token}")])
+async def test_session_and_media_credentials(auth_on, _password_db):
+    """Session tokens authenticate only as Bearer; ?token= is honoured only
+    for scope=media tokens on media GETs (spec: tokens out of URLs)."""
+    Session, secret = _password_db
+    db = Session()
+    try:
+        token, row = auth_store.create_session(db, user_agent="pytest")
+        media, _ = auth_store.mint_media_token(
+            db, auth_store.AuthResult(ok=True, kind="session", session_id=row.id))
+        # Legacy window anchored a minute ahead, so a JWT minted now is
+        # "issued before Step 3".
+        set_config(db, "auth_sessions_epoch", repr(time.time() + 60))
+    finally:
+        db.close()
+    bearer = lambda t: HOST + [("authorization", f"Bearer {t}")]  # noqa: E731
+
+    status, _, body = await asgi_request(main.app, "POST", "/api/cert/regenerate", bearer(token) + JSON)
     assert status == 200 and body == b"reached"
-    status, _, _ = await asgi_request(main.app, "GET", f"/api/agents?token={token}", HOST)
-    assert status == 200
-    preview = create_token(auth_on, extra_claims={"scope": "preview"})
+    status, headers, _ = await asgi_request(main.app, "GET", f"/api/agents?token={token}", HOST)
+    assert status == 401 and headers["x-auth-reason"] == "missing"
+    status, _, body = await asgi_request(main.app, "GET", f"/api/files/p/x.png?token={media}", HOST)
+    assert status == 200 and body == b"reached"
+    status, headers, _ = await asgi_request(main.app, "GET", "/api/agents", bearer(media))
+    assert status == 401 and headers["x-auth-reason"] == "invalid"
     status, _, _ = await asgi_request(
-        main.app, "GET", "/api/agents", HOST + [("authorization", f"Bearer {preview}")])
+        main.app, "POST", f"/api/files/exists-batch?token={media}", HOST + JSON)
     assert status == 401
+
+    legacy = create_token(auth_on)
+    status, _, body = await asgi_request(main.app, "GET", "/api/agents", bearer(legacy))
+    assert status == 200 and body == b"reached"
+    preview = create_token(auth_on, extra_claims={"scope": "preview"})
+    status, headers, _ = await asgi_request(main.app, "GET", "/api/agents", bearer(preview))
+    assert status == 401 and headers["x-auth-reason"] == "invalid"

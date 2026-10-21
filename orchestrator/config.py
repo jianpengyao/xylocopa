@@ -123,7 +123,42 @@ DROPBOX_RELAY_URL = os.getenv("DROPBOX_RELAY_URL", "https://jianpengyao.github.i
 DROPBOX_USING_DEFAULT_APP = not os.getenv("DROPBOX_APP_KEY", "")
 
 # Auth
+# Default idle lock (minutes) while SystemConfig auth_idle_timeout_minutes is
+# absent; the Security settings / reset CLI store the owner's choice there.
 AUTH_TIMEOUT_MINUTES = int(os.getenv("AUTH_TIMEOUT_MINUTES", "30"))
+# Absolute lifetime of a server-side session (auth_store.py), from login.
+AUTH_SESSION_MAX_DAYS = int(os.getenv("AUTH_SESSION_MAX_DAYS", "90"))
+# Accepted idle-lock values (minutes); 0 = off.
+AUTH_IDLE_CHOICES = (0, 5, 15, 30, 60, 120, 240, 480, 1440)
+# ?token= media URLs (/api/files, /api/thumbs, /api/uploads): scope=media JWT
+# bound to a session. Long enough for memoized URLs and <video> Range requests.
+MEDIA_TOKEN_TTL_MINUTES = 720
+# One-time WebSocket handshake tickets (in memory, single use).
+WS_TICKET_TTL_S = 30
+# How often an open WebSocket re-checks its session (revoked / expired / idle).
+WS_AUTH_RECHECK_S = float(os.getenv("XY_WS_AUTH_RECHECK_S", "60"))
+# Per-agent hook nonce check: "enforce" (403 on mismatch while auth is on),
+# "log" (log only) or "off". enforce by default: Claude Code 2.1.306 was
+# verified to interpolate $XY_HOOK_NONCE into HTTP-hook headers.
+XY_HOOK_NONCE_MODE = os.getenv("XY_HOOK_NONCE_MODE", "enforce").strip().lower() or "enforce"
+# Login / change-password limiter (auth.LoginRateLimiter): lock only the
+# failing client after THRESHOLD failures, doubling from BASE up to MAX
+# seconds; an entry is forgotten after FORGET quiet seconds.
+AUTH_LIMIT_THRESHOLD = 5
+AUTH_LIMIT_BASE_S = 60
+AUTH_LIMIT_MAX_S = 900
+AUTH_LIMIT_FORGET_S = 900
+AUTH_LIMIT_MAX_ENTRIES = 4096
+# Global backstop (auth.GlobalFailureMeter): above SOFT failures within
+# WINDOW seconds every password check is delayed by STEP per extra failure,
+# capped at MAX_DELAY. It only slows, never refuses.
+AUTH_GLOBAL_WINDOW_S = 300
+AUTH_GLOBAL_SOFT = 30
+AUTH_GLOBAL_STEP_S = 0.1
+AUTH_GLOBAL_MAX_DELAY_S = 2.0
+# Session write throttles (seconds): last_active_at / last_seen_at+last_ip.
+ACTIVITY_WRITE_S = 15
+SEEN_WRITE_S = 60
 
 # Database
 DB_PATH = _resolve(os.getenv("DB_PATH", "data/orchestrator.db"))
