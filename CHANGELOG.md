@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-21
+
+Adds an Assets tab to the project page. It shows, in one grid, the images, videos, HTML pages and web apps, PDFs, office documents and 3D files that agents referred to in a project's chats. Each file can be starred, hidden or given a note, one at a time or many at once in select mode. Tile thumbnails are square crops rendered in the background, so the grid does not wait on large images or videos. Also: compact summaries that Claude Code prefixes with a note are imported as system messages again, and summaries already stored as user messages are corrected on the next sync.
+
+![Assets tab](docs/assets-tab.png)
+
+### Added
+
+- **Assets tab on the project page.** (15b30f32, 8f18a632)
+  - **Sources.** Includes files that agents referred to in chat:
+    - paths in agent messages
+    - Write / Edit / MultiEdit / NotebookEdit calls
+    - SendUserFile
+    - `webapp_present` cards (static, port and url apps)
+
+    Files the agent only opened with Read form a separate "Seen by agent" tier, which is hidden by default.
+  - **Types.**
+    - Images: png, jpg, gif, svg, webp.
+    - Videos: mp4, webm, mov, m4v.
+    - HTML.
+    - PDF.
+    - Office: docx, xlsx, pptx and their legacy formats.
+    - 3D: ply, obj, stl, glb, gltf, splat, spz.
+
+    Markdown and data files are not included.
+  - **Paths.** Paths outside the project directory, such as `/tmp`, are not listed. Files that no longer exist are hidden unless "Missing" is turned on. Starred ones stay listed.
+  - **Marks.** Each file can have a star, a hide flag and a free-text note. Select mode, entered with the Select button or a long press, applies Star / Unstar / Hide / Unhide to several files at once. Marks sync to other open clients over WebSocket.
+  - **Opening a file.**
+    - Images and videos open in the lightbox, which swipes across the grid's media.
+    - HTML files and static web apps open in the sandboxed preview, port apps through the preview proxy, and url apps in a new tab.
+    - PDFs open in the file viewer. Office and 3D files are downloaded.
+    - The details sheet has "Open in chat", which jumps to the message that mentioned the file.
+  - **Toolbar.**
+    - Type chips; types with no files are not shown.
+    - A name/path filter and a starred-only toggle.
+    - A View options menu with the sort order (recent, name, size) and switches to also show seen, hidden and missing files.
+
+    The settings are remembered per project.
+- **Asset index.** (cb97ea8c)
+  - New tables `asset_refs` and `asset_marks` are created at startup; no migration is needed.
+  - The index updates incrementally over `messages` from a rowid watermark in `system_config`. Updates run after JSONL sync, on streaming updates, on `hook_emit_message` and on each list request.
+  - New refs emit `assets_changed`; mark changes emit `asset_marks_changed`.
+  - Project rename and delete update or remove both tables.
+  - API: `GET /api/projects/{name}/assets?include_missing=` and `POST /api/projects/{name}/assets/marks` (up to 1000 paths per request).
+- **Tile thumbnails.**
+  - `GET /api/thumbs/...?tile=1` returns a 400 px center-cropped square, made with Pillow for images and ffmpeg for videos. It is cached as `.thumbcache/<name>.tile400.thumb.jpg`. (c6338cbd)
+  - A background thread renders the tiles of delivered images and videos, newest first, at startup and whenever a project gains refs. The thumbs route still renders any tile that is not cached yet. (de4c3ead)
+
+### Changed
+
+- **Thumbnail rendering.** (f27c8c7b)
+  - Pillow runs in a worker thread instead of on the event loop.
+  - EXIF orientation is applied.
+  - Output is written to a temporary file and then renamed into place.
+  - Image and video thumbnails are each serialized per output file.
+- **`tool_use` metadata.** It keeps the full `file_path` for Read / Edit / Write / MultiEdit, `notebook_path` for NotebookEdit, and the `files` of SendUserFile. The tool summary shown in chat is unchanged. (ceccbfaa)
+- **`?focus=<message id>` in chat.** The page now waits for the agent to load before focusing. A message inside a merged tool-call group resolves to the group's rendered row, which scrolls into view and is highlighted. Before, this paged through the whole history. (d7628fa0)
+
+### Fixed
+
+- **Compact summaries imported as user messages.** When the summarized conversation contained Artifact content written by others, Claude Code puts an `<artifact-content-authored-by-others/>` marker and a note before the summary. The parser recognised summaries only by their "This session is being continued…" prefix, so these were imported as CLI user messages.
+  - The parser now checks the entry's `isCompactSummary` flag, before the tag filters, and keeps the prefix check as a fallback.
+  - The system bubble starts at the summary text. The preamble is dropped only when the summary phrase starts a line. (c42e670f)
+- **Summaries stored before the fix.** On the next import, such a user row is converted in place to a system message with the same id and position. A startup full scan triggers this, so no manual database edit is needed. Loading older chat pages keeps messages in sequence order, so the converted row appears in its original place. (c61272fa)
+- **Lightbox video poster with a token in the URL.** The poster used to append `.thumb.jpg` after `?token=…`. It now uses the `/api/thumbs` frame, or inserts the suffix before the query string. (d7628fa0)
+
 ## [0.17.2] - 2026-10-15
 
 Reliability release for the home-screen (PWA) app on iOS and for idle agents. After a network drop the iOS app could stay on Safari's "FetchEvent.respondWith received an error" page, or later on a "Reconnecting…" page whose buttons had no effect, until website data was cleared. Navigations and API calls no longer go through Workbox. The service worker serves an offline page that retries on its own and has working buttons. The recovery paths no longer remove the service worker while the server is unreachable. Separately, agents left idle no longer stay in EXECUTING after Claude Code's background compaction. Also: the frontend honours `DISABLE_AUTH`, and Safari password AutoFill no longer appears on ordinary inputs.
