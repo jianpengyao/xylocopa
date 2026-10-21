@@ -10,8 +10,8 @@ import { assetWebapp } from "./assetFilters";
 const THUMB_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
 const THUMB_VIDEO_EXTS = new Set(["mp4", "webm", "mov", "m4v"]);
 
-// Grid tiles ask for the small variant; the backend caches it separately.
-export const TILE_THUMB_WIDTH = 320;
+// Grid tiles ask for the square-cropped tile variant (cached separately).
+const TILE_THUMB_PARAM = "tile=1";
 
 function withParam(url, param) {
   return `${url}${url.includes("?") ? "&" : "?"}${param}`;
@@ -33,7 +33,7 @@ export function tileThumbUrl(project, asset) {
   }
   if ((asset.kind === "image" && THUMB_IMAGE_EXTS.has(ext))
     || (asset.kind === "video" && THUMB_VIDEO_EXTS.has(ext))) {
-    return withCacheBust(withParam(thumbUrl(project, asset.path), `w=${TILE_THUMB_WIDTH}`), asset.mtime);
+    return withCacheBust(withParam(thumbUrl(project, asset.path), TILE_THUMB_PARAM), asset.mtime);
   }
   return null;
 }

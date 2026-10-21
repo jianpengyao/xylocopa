@@ -32,13 +32,13 @@ describe("tileThumbUrl", () => {
 
   it("asks for the 320px variant with an mtime cache-bust", () => {
     const url = tileThumbUrl("proj", asset("out/a b.png"));
-    expect(url).toBe("/api/thumbs/proj/out/a%20b.png?w=320&_v=1700000000.5");
+    expect(url).toBe("/api/thumbs/proj/out/a%20b.png?tile=1&_v=1700000000.5");
   });
 
   it("keeps the auth token intact", () => {
     localStorage.setItem(TOKEN_KEY, "tok");
     const url = tileThumbUrl("proj", asset("out/a.png"));
-    expect(url).toBe("/api/thumbs/proj/out/a.png?token=tok&w=320&_v=1700000000.5");
+    expect(url).toBe("/api/thumbs/proj/out/a.png?token=tok&tile=1&_v=1700000000.5");
   });
 
   it("uses the file itself for svg", () => {
@@ -47,7 +47,7 @@ describe("tileThumbUrl", () => {
 
   it("uses the poster thumb for video, never the mp4", () => {
     const url = tileThumbUrl("proj", asset("v/clip.mp4", { kind: "video", ext: "mp4" }));
-    expect(url.startsWith("/api/thumbs/proj/v/clip.mp4?w=320")).toBe(true);
+    expect(url.startsWith("/api/thumbs/proj/v/clip.mp4?tile=1")).toBe(true);
   });
 
   it("returns null for icon tiles, missing files and non-file webapps", () => {
@@ -57,7 +57,7 @@ describe("tileThumbUrl", () => {
   });
 
   it("omits the cache-bust when mtime is unknown", () => {
-    expect(tileThumbUrl("proj", asset("a.png", { mtime: null }))).toBe("/api/thumbs/proj/a.png?w=320");
+    expect(tileThumbUrl("proj", asset("a.png", { mtime: null }))).toBe("/api/thumbs/proj/a.png?tile=1");
   });
 });
 

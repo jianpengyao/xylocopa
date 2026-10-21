@@ -1,7 +1,7 @@
 import { memo, useRef, useState } from "react";
 import {
   Box, Check, Eye, EyeOff, FileSpreadsheet, FileText, Film, Globe,
-  Image as ImageIcon, Info, Link2, Presentation, Server, Star,
+  Image as ImageIcon, Link2, MoreHorizontal, Presentation, Server, Star,
 } from "lucide-react";
 import useLongPress from "../../hooks/useLongPress";
 import { tileThumbUrl } from "./assetMedia";
@@ -34,13 +34,28 @@ export function AssetKindIcon({ asset, className = "w-7 h-7" }) {
   }
 }
 
+/** File name with soft-wrap points after "_" / "-" and before ".", so a
+ *  two-line caption breaks between name parts rather than mid-word. */
+function softWrapName(name) {
+  const parts = [];
+  let cur = "";
+  for (const ch of name) {
+    if (ch === "." && cur) { parts.push(cur); cur = ""; }
+    cur += ch;
+    if (ch === "_" || ch === "-") { parts.push(cur); cur = ""; }
+  }
+  if (cur) parts.push(cur);
+  return parts.flatMap((p, i) => (i ? [<wbr key={i} />, p] : [p]));
+}
+
 /**
  * Square grid tile for one asset.
  *
  * Tap (click) → onOpen (or onToggleSelect in selection mode); long-press →
- * onEnterSelect. The star corner button and the caption ⓘ are excluded from
+ * onEnterSelect. The star corner button and the caption ⋯ are excluded from
  * the long-press/tap surface via data-no-longpress (AgentRow pattern).
  */
+
 const AssetTile = memo(function AssetTile({
   project,
   asset,
@@ -90,7 +105,7 @@ const AssetTile = memo(function AssetTile({
   };
 
   return (
-    <div className="min-w-0">
+    <div className="group/asset min-w-0">
       <div
         role="button"
         tabIndex={0}
@@ -174,7 +189,8 @@ const AssetTile = memo(function AssetTile({
           </span>
         )}
 
-        {/* Top-right: quick star toggle (outline only on hover on pointer devices) */}
+        {/* Top-right: quick star toggle. Unstarred, it shows on hover only and
+            not at all on touch (stars there go through select mode / details). */}
         {!selecting && (
           <button
             type="button"
@@ -185,7 +201,7 @@ const AssetTile = memo(function AssetTile({
             className={`absolute top-1 right-1 w-7 h-7 rounded-full flex items-center justify-center bg-black/35 transition-opacity focus:outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent ${
               asset.starred
                 ? "text-amber-400"
-                : "text-white/90 opacity-80 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                : "text-white/90 opacity-0 group-hover:opacity-100 [@media(hover:none)]:hidden"
             }`}
           >
             <Star className="w-4 h-4" fill={asset.starred ? "currentColor" : "none"} strokeWidth={2} />
@@ -193,10 +209,11 @@ const AssetTile = memo(function AssetTile({
         )}
       </div>
 
-      {/* Caption + details affordance */}
-      <div className="flex items-center gap-0.5 mt-1 pl-0.5">
-        <p className={`text-[11px] leading-tight truncate min-w-0 flex-1 ${missing ? "text-faint" : "text-dim"}`} title={asset.path}>
-          {name}
+      {/* Caption (two lines; breaks anywhere only if a name part won't fit) +
+          details affordance */}
+      <div className="flex items-start gap-0.5 mt-1.5 pl-0.5">
+        <p className={`min-w-0 flex-1 text-xs leading-snug line-clamp-2 [overflow-wrap:anywhere] ${missing ? "text-faint" : "text-label"}`} title={asset.path}>
+          {softWrapName(name)}
         </p>
         {!selecting && (
           <button
@@ -204,9 +221,9 @@ const AssetTile = memo(function AssetTile({
             onClick={(e) => { e.stopPropagation(); onInfo?.(asset); }}
             title="Details"
             aria-label={`Details for ${name}`}
-            className="shrink-0 p-1 -my-1 rounded text-faint hover:text-heading hover:bg-input transition-colors"
+            className="shrink-0 p-1 -mt-0.5 -mr-1 rounded text-faint hover:text-heading hover:bg-input transition-[opacity,color] [@media(hover:hover)]:opacity-0 group-hover/asset:opacity-100 focus-visible:opacity-100"
           >
-            <Info className="w-3.5 h-3.5" />
+            <MoreHorizontal className="w-4 h-4" />
           </button>
         )}
       </div>

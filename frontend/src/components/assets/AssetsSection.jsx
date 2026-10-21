@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Eye, EyeOff, FileX, Star, StarOff } from "lucide-react";
+import { Check, Eye, EyeOff, FileX, SlidersHorizontal, Star, StarOff } from "lucide-react";
 import FilterTabs from "../FilterTabs";
 import FluentEmoji from "../FluentEmoji";
 import ImageLightbox from "../ImageLightbox";
@@ -41,27 +41,84 @@ const MAX_MARK_PATHS = 1000;
 const SORT_KEYS = new Set(SORT_OPTIONS.map((o) => o.value));
 const TYPE_KEYS = new Set(TYPE_TABS.map((t) => t.key));
 
-const SELECT_STYLE = {
-  backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")",
-  backgroundRepeat: "no-repeat",
-  backgroundPosition: "right 8px center",
-};
-
-function TogglePill({ active, onClick, icon, children, title }) {
-  const Icon = icon;
+/** Sort + the default-off "also show" toggles, behind one toolbar button. */
+function ViewMenu({ sort, onSort, toggles }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const modified = sort !== "recent" || toggles.some((t) => t.active);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={active}
-      className={`shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-xs font-medium transition-colors ${
-        active ? "accent-tint-15 text-accent" : "bg-surface text-label hover:bg-input hover:text-body"
-      }`}
-    >
-      <Icon className="w-3.5 h-3.5" fill={active && Icon === Star ? "currentColor" : "none"} />
-      {children}
-    </button>
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="View options"
+        aria-haspopup="true"
+        aria-expanded={open}
+        title="Sort and show"
+        className={`relative h-9 w-9 flex items-center justify-center rounded-lg border border-divider transition-colors ${
+          open ? "bg-input text-body" : "bg-surface text-label hover:bg-input hover:text-body"
+        }`}
+      >
+        <SlidersHorizontal className="w-4 h-4" />
+        {modified && <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-accent" aria-hidden="true" />}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 z-30 w-60 rounded-xl bg-surface border border-divider shadow-popover p-1.5">
+          <p className="px-2 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">Sort by</p>
+          <div className="flex gap-0.5 p-0.5 rounded-lg bg-input">
+            {SORT_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => onSort(o.value)}
+                aria-pressed={sort === o.value}
+                className={`flex-1 h-7 rounded-md text-xs font-medium transition-colors ${
+                  sort === o.value ? "bg-surface text-heading shadow-sm" : "text-dim hover:text-body"
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className="px-2 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">Also show</p>
+          {toggles.map((t) => {
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={t.onToggle}
+                aria-pressed={t.active}
+                title={t.title}
+                className="w-full flex items-center gap-2.5 h-9 px-2 rounded-lg text-sm text-body hover:bg-input transition-colors"
+              >
+                <Icon className="w-4 h-4 shrink-0 text-dim" />
+                <span className="flex-1 text-left truncate">{t.label}</span>
+                {t.count > 0 && <span className="text-xs text-faint tabular-nums">{t.count}</span>}
+                <span
+                  className={`shrink-0 w-4 h-4 rounded flex items-center justify-center border transition-colors ${
+                    t.active ? "bg-accent border-accent text-white" : "border-divider"
+                  }`}
+                >
+                  {t.active && <Check className="w-3 h-3" strokeWidth={3} />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -88,7 +145,7 @@ function BulkButton({ onClick, disabled, icon, label, count, tone = "neutral", f
 
 function SkeletonGrid() {
   return (
-    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2" aria-hidden="true">
+    <div className="grid grid-cols-3 sm:grid-cols-4 gap-x-2 gap-y-3" aria-hidden="true">
       {Array.from({ length: 12 }, (_, i) => (
         <div key={i}>
           <div className="aspect-square rounded-xl bg-skel animate-pulse" />
@@ -471,6 +528,7 @@ export default function AssetsSection({ projectName, visible }) {
     setStarredOnly(false);
   };
   const shown = visibleList.slice(0, limit);
+  const typeTabs = TYPE_TABS.filter((t) => t.key === "all" || t.key === type || counts[t.key] > 0);
   const totalLoaded = assets?.length || 0;
 
   return (
@@ -526,17 +584,32 @@ export default function AssetsSection({ projectName, visible }) {
               </button>
             )}
           </div>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            aria-label="Sort assets"
-            className="shrink-0 w-[5.75rem] h-9 pl-3 pr-6 rounded-lg bg-surface border border-divider text-sm font-medium text-label outline-none appearance-none focus:ring-1 focus:ring-accent"
-            style={SELECT_STYLE}
+          <button
+            type="button"
+            onClick={() => setStarredOnly((v) => !v)}
+            aria-label="Starred only"
+            aria-pressed={!!starredOnly}
+            title="Only starred assets"
+            className={`shrink-0 h-9 w-9 flex items-center justify-center rounded-lg border transition-colors ${
+              starredOnly
+                ? "border-amber-400/60 bg-amber-400/15 text-amber-500"
+                : "border-divider bg-surface text-label hover:bg-input hover:text-body"
+            }`}
           >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+            <Star className="w-4 h-4" fill={starredOnly ? "currentColor" : "none"} />
+          </button>
+          <ViewMenu
+            sort={sort}
+            onSort={setSort}
+            toggles={[
+              { key: "seen", label: "Seen by agent", icon: Eye, active: !!showSeen, count: excluded.seen,
+                onToggle: () => setShowSeen((v) => !v), title: "Include files the agent only read" },
+              { key: "hidden", label: "Hidden", icon: EyeOff, active: !!showHidden, count: excluded.hidden,
+                onToggle: () => setShowHidden((v) => !v), title: "Show hidden assets" },
+              { key: "missing", label: "Missing", icon: FileX, active: !!showMissing,
+                onToggle: () => setShowMissing((v) => !v), title: "Show files that no longer exist" },
+            ]}
+          />
           <button
             type="button"
             onClick={() => enterSelect()}
@@ -548,25 +621,11 @@ export default function AssetsSection({ projectName, visible }) {
         </div>
       )}
 
-      {/* Type chips — bleed to the page edge like the header tab row */}
-      <div className="-mx-4 -mb-3">
-        <FilterTabs tabs={TYPE_TABS} active={type} onChange={setType} counts={assets ? counts : undefined} />
-      </div>
-
-      {/* Visibility toggles */}
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar -mx-4 px-4">
-        <TogglePill active={!!starredOnly} onClick={() => setStarredOnly((v) => !v)} icon={Star} title="Only starred assets">
-          Starred
-        </TogglePill>
-        <TogglePill active={!!showSeen} onClick={() => setShowSeen((v) => !v)} icon={Eye} title="Include files the agent only read">
-          Seen by agent
-        </TogglePill>
-        <TogglePill active={!!showHidden} onClick={() => setShowHidden((v) => !v)} icon={EyeOff} title="Show hidden assets">
-          Hidden
-        </TogglePill>
-        <TogglePill active={!!showMissing} onClick={() => setShowMissing((v) => !v)} icon={FileX} title="Show files that no longer exist">
-          Missing
-        </TogglePill>
+      {/* Type chips — bleed to the page edge like the header tab row.
+          Empty kinds are left out (the active one always stays). mb-0
+          overrides space-y: FilterTabs' own pb-3 is the gap to the grid. */}
+      <div className="-mx-4 mb-0">
+        <FilterTabs tabs={typeTabs} active={type} onChange={setType} counts={assets ? counts : undefined} />
       </div>
 
       {error && assets && (
@@ -651,7 +710,7 @@ export default function AssetsSection({ projectName, visible }) {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-x-2 gap-y-3">
             {shown.map((asset) => (
               <AssetTile
                 key={asset.path}

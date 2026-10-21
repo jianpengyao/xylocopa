@@ -73,6 +73,7 @@ describe("AssetsSection", () => {
     expect(screen.getByRole("button", { name: "b.png" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "read.png" })).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "View options" }));
     fireEvent.click(screen.getByRole("button", { name: /Seen by agent/ }));
     expect(await screen.findByRole("button", { name: "read.png" })).toBeInTheDocument();
     expect(localStorage.getItem("draft:ui:project:proj:assets:seen")).toBe("true");
@@ -81,6 +82,7 @@ describe("AssetsSection", () => {
   it("refetches with include_missing when Missing is toggled", async () => {
     renderSection();
     await screen.findByRole("button", { name: "a.png" });
+    fireEvent.click(screen.getByRole("button", { name: "View options" }));
     fireEvent.click(screen.getByRole("button", { name: /Missing/ }));
     await waitFor(() => expect(fetchProjectAssets).toHaveBeenCalledWith("proj", { includeMissing: true }));
   });
