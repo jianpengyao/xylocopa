@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { runtimeCaching } from './sw-runtime-caching.js'
+import { refuseHookPaths } from './proxy-bypass.js'
 
 // Load self-signed certs for HTTPS (needed for microphone access over LAN)
 const certsDir = path.resolve(__dirname, '../certs')
@@ -221,8 +222,11 @@ export default defineConfig({
       // ws:true — port-preview web apps (webapp_present) open WebSockets at
       // /api/preview/.../ws; the shorthand form only proxied plain HTTP,
       // leaving those cards stuck on "connecting".
-      '/api': { target: 'http://localhost:8080', ws: true },
-      '/ws': { target: 'ws://localhost:8080', ws: true },
+      // bypass on EVERY entry: /api/hooks/* (agent hook channel, loopback
+      // only) → 404. Keys match the raw URL by prefix but the proxy resolves
+      // dot segments, so /ws/../api/hooks/x would reach the hooks otherwise.
+      '/api': { target: 'http://localhost:8080', ws: true, bypass: refuseHookPaths },
+      '/ws': { target: 'ws://localhost:8080', ws: true, bypass: refuseHookPaths },
     },
   },
   preview: {
@@ -236,8 +240,11 @@ export default defineConfig({
       // ws:true — port-preview web apps (webapp_present) open WebSockets at
       // /api/preview/.../ws; the shorthand form only proxied plain HTTP,
       // leaving those cards stuck on "connecting".
-      '/api': { target: 'http://localhost:8080', ws: true },
-      '/ws': { target: 'ws://localhost:8080', ws: true },
+      // bypass on EVERY entry: /api/hooks/* (agent hook channel, loopback
+      // only) → 404. Keys match the raw URL by prefix but the proxy resolves
+      // dot segments, so /ws/../api/hooks/x would reach the hooks otherwise.
+      '/api': { target: 'http://localhost:8080', ws: true, bypass: refuseHookPaths },
+      '/ws': { target: 'ws://localhost:8080', ws: true, bypass: refuseHookPaths },
     },
   },
   optimizeDeps: {
