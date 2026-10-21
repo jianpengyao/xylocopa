@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, Download, Eye, EyeOff, MessageSquare, Star, X } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Eye, EyeOff, MessageSquare, Star, X } from "lucide-react";
 import { relativeTime } from "../../lib/formatters";
 import { formatBytes } from "../dropbox/format";
 import { AssetKindIcon } from "./AssetTile";
-import { assetWebapp, displayName, extBadge, parseTs } from "./assetFilters";
+import { assetArtifact, assetWebapp, displayName, extBadge, parseTs } from "./assetFilters";
 import { chatLinkFor, isFileAsset, openActionFor } from "./assetMedia";
 
 const SOURCE_LABELS = {
@@ -13,6 +13,7 @@ const SOURCE_LABELS = {
   send: "Sent",
   webapp: "Web app",
   read: "Read",
+  artifact: "Published",
 };
 
 const KIND_LABELS = {
@@ -23,6 +24,7 @@ const KIND_LABELS = {
   office: "Office",
   "3d": "3D",
   webapp: "Web app",
+  artifact: "Artifact",
 };
 
 const OPEN_LABELS = {
@@ -31,6 +33,7 @@ const OPEN_LABELS = {
   port: "Open app",
   "port-chat": "Open from chat",
   url: "Open link",
+  artifact: "Open artifact",
   pdf: "View PDF",
   download: "Download",
 };
@@ -110,14 +113,23 @@ export default function AssetDetailSheet({ asset, onClose, onOpen, onMark, onOpe
   const isFile = isFileAsset(asset);
   const missing = asset.exists === false;
   const app = assetWebapp(asset);
+  // claude.ai artifact: the box shows / copies its link, the times are
+  // publish times and the primary action is a real <a target=_blank>.
+  const art = assetArtifact(asset);
   const name = displayName(asset);
   const badge = extBadge(asset);
   const firstMs = parseTs(asset.first_seen_at);
   const lastMs = parseTs(asset.last_seen_at);
+  const firstPubMs = parseTs(art?.first_published_at);
+  const lastPubMs = parseTs(art?.last_published_at);
+  const publisher = art?.published_by_agent_name || art?.published_by_agent_id;
+  const artUrl = art?.url || asset.path;
+  const copyLabel = art ? "Copy link" : "Copy path";
   const noteDirty = noteDraft.trim() !== (asset.note || "").trim();
 
   const copyPath = () => {
-    const text = app?.kind === "url" || app?.kind === "port" ? (app.target || asset.path) : asset.path;
+    const text = art ? artUrl
+      : app?.kind === "url" || app?.kind === "port" ? (app.target || asset.path) : asset.path;
     navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(true);
     clearTimeout(copyTimer.current);
@@ -167,7 +179,7 @@ export default function AssetDetailSheet({ asset, onClose, onOpen, onMark, onOpe
               )}
               {missing && (
                 <span className="text-[10px] font-semibold px-1.5 py-px rounded-full danger-tint-15 text-danger">
-                  {app?.kind === "port" ? "Not running" : "Missing"}
+                  {art ? "Deleted" : app?.kind === "port" ? "Not running" : "Missing"}
                 </span>
               )}
             </div>
@@ -184,16 +196,20 @@ export default function AssetDetailSheet({ asset, onClose, onOpen, onMark, onOpe
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-4" style={{ overscrollBehavior: "contain" }}>
-          {/* Path */}
+          {art?.description && (
+            <p className="text-xs text-dim break-words">{art.description}</p>
+          )}
+
+          {/* Path (link for artifacts) */}
           <div className="flex items-start gap-2 rounded-xl bg-surface px-3 py-2">
             <code className="text-xs font-mono text-body break-all flex-1 min-w-0">
-              {app?.kind === "url" || app?.kind === "port" ? app.target : asset.path}
+              {art ? artUrl : app?.kind === "url" || app?.kind === "port" ? app.target : asset.path}
             </code>
             <button
               type="button"
               onClick={copyPath}
-              title={copied ? "Copied!" : "Copy path"}
-              aria-label="Copy path"
+              title={copied ? "Copied!" : copyLabel}
+              aria-label={copyLabel}
               className="shrink-0 p-1 -m-0.5 rounded text-dim hover:text-label hover:bg-input transition-colors"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-ok" /> : <Copy className="w-3.5 h-3.5" />}
@@ -267,10 +283,25 @@ export default function AssetDetailSheet({ asset, onClose, onOpen, onMark, onOpe
           <dl>
             {isFile && <Row label="Size">{asset.size != null ? formatBytes(asset.size) : "—"}</Row>}
             {isFile && asset.mtime != null && <Row label="Modified">{fmtAbs(asset.mtime * 1000)}</Row>}
-            {firstMs > 0 && <Row label="First seen" title={fmtAbs(firstMs)}>{relativeTime(asset.first_seen_at)}</Row>}
-            {lastMs > 0 && <Row label="Last seen" title={fmtAbs(lastMs)}>{relativeTime(asset.last_seen_at)}</Row>}
+            {/* An artifact with no publish times (a ref-less mark, or a row
+                rebuilt from its path) keeps the First seen / Last seen rows. */}
+            {art && (firstPubMs > 0 || lastPubMs > 0) ? (
+              <>
+                {/* "First published", not "Created": the first indexed publish
+                    can itself be a republish. */}
+                {firstPubMs > 0 && <Row label="First published" title={fmtAbs(firstPubMs)}>{relativeTime(art.first_published_at)}</Row>}
+                {lastPubMs > 0 && <Row label="Last published" title={fmtAbs(lastPubMs)}>{relativeTime(art.last_published_at)}</Row>}
+              </>
+            ) : (
+              <>
+                {firstMs > 0 && <Row label="First seen" title={fmtAbs(firstMs)}>{relativeTime(asset.first_seen_at)}</Row>}
+                {lastMs > 0 && <Row label="Last seen" title={fmtAbs(lastMs)}>{relativeTime(asset.last_seen_at)}</Row>}
+              </>
+            )}
+            {publisher && <Row label="Published by">{publisher}</Row>}
+            {art?.version != null && <Row label="Version">{art.version}</Row>}
             {asset.mention_count > 0 && <Row label="References">{asset.mention_count}</Row>}
-            {(asset.last_agent_name || asset.last_agent_id) && (
+            {!art && (asset.last_agent_name || asset.last_agent_id) && (
               <Row label="Last agent">{asset.last_agent_name || asset.last_agent_id}</Row>
             )}
             {Array.isArray(asset.sources) && asset.sources.length > 0 && (
@@ -281,7 +312,20 @@ export default function AssetDetailSheet({ asset, onClose, onOpen, onMark, onOpe
 
         {/* Actions */}
         <div className="shrink-0 flex items-center gap-2 px-5 pt-3 pb-4 border-t border-divider">
-          {action !== "details" && action !== "download" && (
+          {/* An anchor, not onOpen → window.open: keeps the native long-press
+              menu on iOS (Copy Link / Share) and is never popup-blocked. The
+              sheet stays open. */}
+          {action === "artifact" ? (
+            <a
+              href={art.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 flex items-center justify-center gap-1.5 min-h-[40px] rounded-lg bg-accent text-accent-ink text-sm font-semibold hover:opacity-90 transition-opacity"
+            >
+              {OPEN_LABELS.artifact}
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          ) : action !== "details" && action !== "download" && (
             <button
               type="button"
               onClick={() => onOpen?.(asset)}

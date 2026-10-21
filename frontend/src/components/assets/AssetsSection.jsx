@@ -20,6 +20,7 @@ import {
   SORT_OPTIONS,
   TYPE_TABS,
   applyServerMarks,
+  assetArtifact,
   assetWebapp,
   displayName,
   filterAssets,
@@ -481,6 +482,9 @@ export default function AssetsSection({ projectName, visible }) {
       case "url":
         window.open(assetWebapp(asset).target, "_blank", "noopener,noreferrer");
         return;
+      case "artifact":
+        window.open(assetArtifact(asset).url, "_blank", "noopener,noreferrer");
+        return;
       case "pdf":
         setPdfFile({ path: asset.path, name: asset.name || asset.path.split("/").pop(), type: "file" });
         return;
@@ -655,7 +659,7 @@ export default function AssetsSection({ projectName, visible }) {
           </div>
           <p className="text-sm text-dim">No assets yet</p>
           <p className="text-xs text-faint mt-1 px-6">
-            Images, videos, web apps and documents agents share in chat collect here
+            Images, videos, web apps, documents and Claude artifacts agents share in chat collect here
           </p>
         </div>
       ) : visibleList.length === 0 ? (

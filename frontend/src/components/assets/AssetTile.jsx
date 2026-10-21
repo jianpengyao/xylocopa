@@ -1,14 +1,30 @@
 import { memo, useRef, useState } from "react";
 import {
-  Box, Check, Eye, EyeOff, FileSpreadsheet, FileText, Film, Globe,
-  Image as ImageIcon, Link2, MoreHorizontal, Presentation, Server, Star,
+  Box, Check, ExternalLink, Eye, EyeOff, FileSpreadsheet, FileText, Film, Globe,
+  Image as ImageIcon, LayoutDashboard, Link2, MoreHorizontal, PanelsTopLeft,
+  Presentation, Server, Sparkles, Star,
 } from "lucide-react";
 import useLongPress from "../../hooks/useLongPress";
+import { relativeTime } from "../../lib/formatters";
 import { tileThumbUrl } from "./assetMedia";
-import { assetWebapp, displayName, extBadge } from "./assetFilters";
+import { assetArtifact, assetWebapp, displayName, extBadge } from "./assetFilters";
+
+// claude.ai artifact glyph by artifact.kind; all accent-tinted so a Slides
+// artifact reads differently from an (orange) .pptx file.
+const ARTIFACT_ICONS = {
+  slides: Presentation,
+  doc: FileText,
+  page: PanelsTopLeft,
+  dashboard: LayoutDashboard,
+};
 
 /** Lucide glyph + tint for icon tiles (no thumbnail). */
 export function AssetKindIcon({ asset, className = "w-7 h-7" }) {
+  const art = assetArtifact(asset);
+  if (art) {
+    const Icon = ARTIFACT_ICONS[art.kind] || Sparkles;
+    return <Icon className={`${className} text-accent`} strokeWidth={1.5} />;
+  }
   const app = assetWebapp(asset);
   const ext = (asset?.ext || "").toLowerCase();
   if (app?.kind === "port") return <Server className={`${className} text-accent`} strokeWidth={1.5} />;
@@ -76,6 +92,9 @@ const AssetTile = memo(function AssetTile({
   const isSvg = (asset.ext || "").toLowerCase() === "svg";
   const name = displayName(asset);
   const showThumb = !!thumb && failedThumb !== thumb;
+  // claude.ai artifact: a link card (never a thumbnail); hover shows the URL.
+  const art = assetArtifact(asset);
+  const hoverTitle = art?.url || asset.path;
 
   const isInner = (e) => !!e?.target?.closest?.("[data-no-longpress]");
   const handleTap = () => {
@@ -111,7 +130,7 @@ const AssetTile = memo(function AssetTile({
         tabIndex={0}
         aria-label={name}
         aria-pressed={selecting ? selected : undefined}
-        title={asset.path}
+        title={hoverTitle}
         {...longPress}
         onPointerDown={onPointerDown}
         onClick={onClick}
@@ -139,6 +158,30 @@ const AssetTile = memo(function AssetTile({
               onError={() => setFailedThumb(thumb)}
               className={`chat-attachment-media w-full h-full pointer-events-none ${isSvg ? "object-contain p-3" : "object-cover"}`}
             />
+          ) : art ? (
+            <div className="w-full h-full flex flex-col">
+              <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-1.5 px-2">
+                <AssetKindIcon asset={asset} />
+                <span className="text-[10px] font-semibold tracking-wide text-faint truncate max-w-full">
+                  {extBadge(asset)}
+                </span>
+              </div>
+              {/* Bottom strip: last publish + opens-externally badge, then the
+                  publisher. The "deleted" badge owns this corner when missing. */}
+              {!missing && (
+                <div className="shrink-0 px-2 pb-1.5 text-[10px] leading-tight text-faint">
+                  <div className="flex items-center gap-1">
+                    <span className="flex-1 min-w-0 truncate">
+                      {relativeTime(art.last_published_at || asset.last_seen_at)}
+                    </span>
+                    <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  </div>
+                  {art.published_by_agent_name && (
+                    <div className="truncate">{art.published_by_agent_name}</div>
+                  )}
+                </div>
+              )}
+            </div>
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 px-2">
               <AssetKindIcon asset={asset} />
@@ -161,7 +204,7 @@ const AssetTile = memo(function AssetTile({
 
         {missing && (
           <span className="absolute bottom-1.5 left-1.5 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-px rounded bg-black/55 text-white/90 pointer-events-none">
-            missing
+            {art ? "deleted" : "missing"}
           </span>
         )}
 
@@ -212,7 +255,7 @@ const AssetTile = memo(function AssetTile({
       {/* Caption (two lines; breaks anywhere only if a name part won't fit) +
           details affordance */}
       <div className="flex items-start gap-0.5 mt-1.5 pl-0.5">
-        <p className={`min-w-0 flex-1 text-xs leading-snug line-clamp-2 [overflow-wrap:anywhere] ${missing ? "text-faint" : "text-label"}`} title={asset.path}>
+        <p className={`min-w-0 flex-1 text-xs leading-snug line-clamp-2 [overflow-wrap:anywhere] ${missing ? "text-faint" : "text-label"}`} title={hoverTitle}>
           {softWrapName(name)}
         </p>
         {!selecting && (
