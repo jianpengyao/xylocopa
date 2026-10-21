@@ -3,7 +3,7 @@
 
 import { fileUrl, thumbUrl } from "../../lib/urls";
 import { withCacheBust } from "../../lib/mediaState";
-import { assetWebapp } from "./assetFilters";
+import { assetArtifact, assetWebapp } from "./assetFilters";
 
 // /api/thumbs renders these (Pillow / ffmpeg); svg is served raw by the same
 // route, so svg tiles load the file itself instead.
@@ -17,8 +17,10 @@ function withParam(url, param) {
   return `${url}${url.includes("?") ? "&" : "?"}${param}`;
 }
 
-/** True for assets backed by a project file (not a port / url webapp). */
+/** True for assets backed by a project file (not a port / url webapp or a
+ *  claude.ai artifact). Gates Size / Modified / Download and thumbnails. */
 export function isFileAsset(asset) {
+  if (assetArtifact(asset)) return false;
   const k = assetWebapp(asset)?.kind;
   return k !== "port" && k !== "url";
 }
@@ -61,6 +63,7 @@ export function isLightboxAsset(asset) {
  *   port      — port webapp → WebAppPreview via its proxy src
  *   port-chat — port webapp without a proxy src → jump to its chat card
  *   url       — url webapp → new tab
+ *   artifact  — claude.ai artifact → new tab
  *   pdf       — ProjectBrowserModal viewer
  *   download  — office / 3d
  *   details   — missing (or nothing better) → detail sheet
@@ -68,6 +71,8 @@ export function isLightboxAsset(asset) {
 export function openActionFor(asset) {
   if (!asset) return "details";
   if (asset.exists === false) return "details";
+  const art = assetArtifact(asset);
+  if (art) return art.url ? "artifact" : "details";
   const app = assetWebapp(asset);
   if (app?.kind === "url") return app.target ? "url" : "details";
   if (app?.kind === "port") {

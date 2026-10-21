@@ -4,9 +4,15 @@
 // Asset shape (GET /api/projects/{name}/assets → assets[]):
 //   { path, name, dir, kind, ext, sources, tier, first_seen_at, last_seen_at,
 //     mention_count, last_agent_id, last_agent_name, last_message_id,
-//     exists, size, mtime, starred, hidden, note, webapp }
+//     exists, size, mtime, starred, hidden, note, webapp, artifact }
+//
+// artifact (claude.ai artifact link rows, kind "artifact"; null otherwise):
+//   { url, kind, type_name, title, description, version, publish_count,
+//     first_published_at, last_published_at, published_by_agent_id,
+//     published_by_agent_name, deleted }
 
-// Type chips. "web" groups raw .html files with webapp_present apps.
+// Type chips. "web" groups raw .html files with webapp_present apps and
+// claude.ai artifacts.
 export const TYPE_TABS = [
   { key: "all", label: "All" },
   { key: "image", label: "Images" },
@@ -23,9 +29,18 @@ export const SORT_OPTIONS = [
   { value: "size", label: "Size" },
 ];
 
+// Artifact type label by artifact.kind (unknown kinds read "Artifact").
+export const ARTIFACT_LABELS = {
+  slides: "Slides",
+  doc: "Doc",
+  page: "Page",
+  dashboard: "Dashboard",
+  other: "Artifact",
+};
+
 export function typeKeyOf(asset) {
   const kind = asset?.kind;
-  if (kind === "html" || kind === "webapp") return "web";
+  if (kind === "html" || kind === "webapp" || kind === "artifact") return "web";
   return kind || "other";
 }
 
@@ -49,9 +64,20 @@ export function assetWebapp(asset) {
   return m ? { kind: m[1], target: m[2] } : null;
 }
 
-/** Human label for a tile / sheet title. Webapps prefer their title. */
+/** The asset's claude.ai artifact descriptor (see header) or null. A ref-less
+ *  row that comes back with artifact: null is rebuilt from its
+ *  "artifact:<url>" path, like assetWebapp, so it still opens its link. */
+export function assetArtifact(asset) {
+  if (asset?.artifact) return asset.artifact;
+  const m = /^artifact:(https:\/\/claude\.ai\/(?:code\/)?artifact\/[0-9A-Za-z-]+)$/.exec(asset?.path || "");
+  return m ? { url: m[1], kind: "other", title: null } : null;
+}
+
+/** Human label for a tile / sheet title. Webapps and artifacts prefer their title. */
 export function displayName(asset) {
   if (!asset) return "";
+  const art = assetArtifact(asset);
+  if (art) return art.title || "Untitled artifact";
   const app = assetWebapp(asset);
   if (app) {
     if (app.title) return app.title;
@@ -63,8 +89,11 @@ export function displayName(asset) {
   return asset.name || (asset.path || "").split("/").pop() || asset.path || "";
 }
 
-/** Short uppercase badge: file extension, or APP / PORT / URL for webapps. */
+/** Short uppercase badge: file extension, APP / PORT / URL for webapps, or
+ *  the artifact type (SLIDES / DOC / PAGE / …). */
 export function extBadge(asset) {
+  const art = assetArtifact(asset);
+  if (art) return (ARTIFACT_LABELS[art.kind] || "Artifact").toUpperCase();
   const app = assetWebapp(asset);
   if (app?.kind === "port") return "PORT";
   if (app?.kind === "url") return "URL";
@@ -72,7 +101,8 @@ export function extBadge(asset) {
   return (asset?.ext || "").toUpperCase();
 }
 
-/** Case-insensitive match on name / path / note / webapp title+target.
+/** Case-insensitive match on name / path / note / webapp title+target /
+ *  artifact title, url, type, description and publisher.
  *  Whitespace-separated terms must all match (AND). */
 export function matchesQuery(asset, query) {
   const raw = (query || "").trim().toLowerCase();
@@ -83,6 +113,11 @@ export function matchesQuery(asset, query) {
     asset.note,
     asset.webapp?.title,
     asset.webapp?.target,
+    asset.artifact?.title,
+    asset.artifact?.url,
+    asset.artifact?.type_name,
+    asset.artifact?.description,
+    asset.artifact?.published_by_agent_name,
   ].filter(Boolean).join("\n").toLowerCase();
   return raw.split(/\s+/).every((term) => hay.includes(term));
 }
