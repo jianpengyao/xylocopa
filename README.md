@@ -54,7 +54,7 @@ You need Linux or macOS, Node.js 18+, Python 3.11+, tmux, and the Claude Code CL
 curl -fsSL https://raw.githubusercontent.com/jianpengyao/xylocopa/master/setup.sh | bash
 ```
 
-The installer clones into `~/xylocopa-main`, prompts for your projects directory, default model, and ports, writes `.env` ([`.env.example`](.env.example) is the annotated reference), generates SSL certs, and starts the services. To install manually instead, clone the repo and run `./setup.sh` followed by `./run.sh start`. Open `https://<machine-ip>:3000` and set a password on first visit.
+The installer clones into `~/xylocopa-main`, prompts for your projects directory, default model, and ports, writes `.env` ([`.env.example`](.env.example) is the annotated reference), generates SSL certs, starts the services, and asks for the web UI password. Password protection is on by default (`DISABLE_AUTH=0`); until a password is set, anyone who can reach the server can use it. To install manually instead, clone the repo and run `./setup.sh` followed by `./run.sh start`. If no password was set during install, open `https://<machine-ip>:3000` and set one on first visit.
 
 - **Add projects.** Long-press **+** to open the **New Project** form, then paste a GitHub URL or point at a folder. Folders in `~/xylocopa-projects/` are picked up automatically.
 - **Auto-start on reboot.** Run `./run.sh startup`, which registers pm2 with your init system and detaches it from the terminal's cgroup, so closing the terminal doesn't kill the services.

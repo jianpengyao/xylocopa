@@ -65,6 +65,106 @@ function confirm(question, defaultYes = true) {
     .then(a => a.toLowerCase().startsWith('y'));
 }
 
+// Like ask(), but nothing typed is echoed (passwords).
+function askSecret(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  let muted = false;
+  rl._writeToOutput = (s) => { if (!muted) rl.output.write(s); };
+  return new Promise(resolve => {
+    rl.question(`  ${B}>${R} ${question}: `, answer => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer);
+    });
+    muted = true;  // the prompt above is already written
+  });
+}
+
+// ── Web UI password ─────────────────────────────────────────────────
+
+// Same minimum as the server (orchestrator/routers/auth.py).
+const MIN_PASSWORD_LENGTH = 8;
+
+async function backendPost(port, urlPath, body, token) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
+    method: 'POST', headers, body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+// Password protection is on by default (DISABLE_AUTH=0), but until a
+// password exists the server lets every request through and the first
+// browser to open the web UI picks the password. Set it here, right after
+// the first start, so the server is never reachable without one.
+async function setWebPassword(port, fport) {
+  let check;
+  try {
+    check = (await backendPost(port, '/api/auth/check')).data;
+  } catch {
+    check = null;
+  }
+  if (!check || typeof check.needs_setup !== 'boolean') {
+    warn(`Backend not reachable — open https://localhost:${fport} and set a password there`);
+    return;
+  }
+  if (check.auth_disabled) {
+    warn('Password protection is off (DISABLE_AUTH=1 in .env) — turn it on in Monitor > Security');
+    return;
+  }
+  if (!check.needs_setup) {
+    info('Web UI password already set');
+    return;
+  }
+
+  const openWarning = () => {
+    warn('No web UI password yet. Until one is set, anyone who can reach this machine');
+    warn(`can use Xylocopa — open https://localhost:${fport} now and set it there.`);
+  };
+  if (!process.stdin.isTTY) {
+    openWarning();
+    return;
+  }
+  console.log(`  ${DIM}Every device (browser, phone) will need this password to sign in.${R}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const password = await askSecret(`Web UI password (at least ${MIN_PASSWORD_LENGTH} characters)`);
+    if (!password) {
+      if (await confirm('Skip setting a password now?', false)) break;
+      continue;
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      warn(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+      continue;
+    }
+    if (await askSecret('Repeat password') !== password) {
+      warn('Passwords do not match');
+      continue;
+    }
+    let r;
+    try {
+      r = await backendPost(port, '/api/auth/set-password', { password, device_label: 'Installer' });
+    } catch (e) {
+      warn(`Could not reach the backend: ${e.message}`);
+      break;
+    }
+    if (!r.ok) {
+      warn(`Could not set the password: ${r.data.detail || `HTTP ${r.status}`}`);
+      if (r.data.detail === 'Password already set') return;
+      continue;
+    }
+    // set-password also signs the caller in; the installer has no use
+    // for that session, so it does not show up under signed-in devices.
+    if (r.data.token) {
+      await backendPost(port, '/api/auth/logout', {}, r.data.token).catch(() => {});
+    }
+    info('Web UI password set — change it later in Monitor > Security');
+    return;
+  }
+  openWarning();
+}
+
 const PLATFORM = os.platform();
 
 // ── Package manager detection + install hints ───────────────────────
@@ -409,6 +509,9 @@ async function main() {
   if (startNow) {
     process.chdir(ROOT);
     run(`bash "${path.join(ROOT, 'run.sh')}" start`);
+
+    step(10, 'Web UI password');
+    await setWebPassword(port, fport);
   }
 
   // Auto-start on boot — asked independently of "start now" so users who
@@ -489,6 +592,9 @@ async function main() {
   To start later:
     ${B}cd ${ROOT}${R}
     ${B}./run.sh${R}
+
+  Then open ${B}https://localhost:${fport}${R} right away and set the web UI
+  password: until one is set, anyone who can reach this machine can use it.
     `);
   }
 }
