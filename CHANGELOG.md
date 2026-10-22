@@ -9,6 +9,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-21
+
+Security release. The server now keeps login sessions: each signed-in device is listed under Monitor › Security and can be signed out on its own, and the idle lock and a 90-day session lifetime are enforced by the server instead of the browser. Password protection can be turned on or off from the same page, and the installer sets the web UI password right after the first start. The backend listens on 127.0.0.1 by default, a request guard checks Host and Origin on every request, and agent hooks carry a per-agent nonce. Also: claude.ai artifacts that agents publish appear in the Assets tab, and the notification bell turns notifications on or off for the current device only.
+
+### Upgrade notes
+
+- **Port 8080 is no longer reachable from other machines.** The backend listens on `BACKEND_HOST`, default `127.0.0.1`. Use `https://<host>:3000`, which proxies `/api` and `/ws` (except `/api/hooks/*`). `BACKEND_HOST=0.0.0.0` restores the old bind, plain HTTP and hook endpoints included.
+- **Host names.** Requests addressed to anything other than an IP, `localhost`, this machine's hostname or a `*.ts.net` name get `403 Host not allowed`. Add other names (a reverse proxy on your own domain, a LAN DNS name) to `XY_ALLOWED_HOSTS`.
+- **Restart with `./run.sh restart`** (`./upgrade.sh` does this). It recreates the pm2 processes so the new bind takes effect, and runs `pm2 save`. `ss -ltn | grep 8080` should then show `127.0.0.1:8080`.
+- **Devices signed in before the upgrade** keep their old token until it expires, at most 24 h after their login, then ask for the password once and get a 90-day session. Until then they are not listed under Signed-in devices and have no idle lock. "Sign out other devices" or a password change ends them at once.
+- **Idle lock.** `AUTH_TIMEOUT_MINUTES` in `.env`, if set, is now enforced by the server. A value chosen in Monitor › Security takes precedence.
+- **Agent hooks.** Agents started before the upgrade have no nonce, and their hooks keep working. The check relies on Claude Code expanding `$XY_HOOK_NONCE` in HTTP-hook headers (verified on 2.1.306). If hooks of new agents fail with `403 Hook nonce mismatch`, set `XY_HOOK_NONCE_MODE=log` (or `off`) and restart.
+- **API scripts.** `?token=` is accepted only for media tokens. Log in with `POST /api/auth/login` (`Content-Type: application/json`) and send `Authorization: Bearer <token>`. WebSockets need a one-time `?ticket=` from `POST /api/auth/ws-ticket`.
+- **No database step.** New tables are created at startup. If you are locked out, run `./run.sh reset-password` on the host.
+
+### Added
+
+- **Server login sessions.** (9bd85399, 5ae7e4ba)
+  - **Sessions.** Login returns a random session token. Only its hash is stored, in the new `auth_sessions` table. A session lasts `AUTH_SESSION_MAX_DAYS` (default 90) from login.
+  - **Idle lock.** The server checks it. Choices are off, 5, 15, 30, 60, 120, 240, 480 and 1440 min; the default is `AUTH_TIMEOUT_MINUTES` (30). Only taps, typing and wheel scrolling count as activity. Background polling does not.
+  - **Login limiter.** It works per client IP. Five failures lock that IP for 60 s, and each further lockout doubles, up to 15 min. Loopback is never limited. Above 30 failures in 5 min, every password check is slowed by up to 2 s.
+  - **Session failures.** They answer 401 with `X-Auth-Reason` (`missing`, `invalid`, `expired`, `revoked` or `idle`). The app logs out only on those, and the login screen shows the reason.
+  - **New endpoints:**
+    - `GET /api/auth/sessions`
+    - `POST /api/auth/sessions/{id}/revoke`
+    - `POST /api/auth/sessions/revoke-others`
+    - `POST /api/auth/activity`
+    - `POST /api/auth/media-token`
+    - `GET/PUT /api/settings/auth`
+- **Monitor › Security section.** (5ae7e4ba, 1b21dfd9)
+  - The password protection switch (below).
+  - Lock after inactivity.
+  - Signed-in devices, with label, last seen time and IP, a Revoke button per device and "Sign out other devices".
+  - Change password, which signs out every other device.
+  - Sign out this device, which also clears cached thumbnails.
+- **Password protection switch.** (4003a010, 6ecae505, 1b21dfd9)
+  - **What it does.** It turns password protection for the whole server on or off, after the password is entered.
+  - **`.env` stays the single source of truth.** The switch rewrites the `DISABLE_AUTH` line atomically and applies it at once, without a restart. A hand edit applies at the next restart, and the card says when the file and the running server disagree.
+  - **Turning it on** keeps the current device signed in and sends other devices to the login page.
+  - **API:** `GET/POST /api/auth/protection`.
+- **Installer sets the web UI password.** (83e5effe)
+  - **The step.** After "Start Xylocopa now?", the installer asks for the password: hidden, entered twice, at least 8 characters. It sets the password over loopback.
+  - **Why.** Until a password exists, the server lets every request through, and the first browser to open the web UI picks the password.
+  - **When it is not set.** If the step is skipped or there is no terminal, the installer prints a warning.
+- **`./run.sh reset-password`.** (210e958a) A break-glass reset on the host. It works with the server running or stopped.
+  - Stores a new password.
+  - Signs out every device, unless `--keep-sessions` is given.
+  - Clears login lockouts.
+  - Optionally sets the idle lock (`--idle-timeout`) or rotates `jwt_secret` (`--rotate-secret`).
+  - `--generate` and `--password-stdin` skip the prompt.
+- **One-time WebSocket tickets.** (476624db)
+  - `/ws/status` and `/ws/terminal/{id}` take a single-use `?ticket=` from `POST /api/auth/ws-ticket`. A ticket is valid for 30 s.
+  - Open sockets re-check their session every `XY_WS_AUTH_RECHECK_S` seconds (default 60). They close with 4001 when the session was revoked, expired or locked.
+- **Per-agent hook nonce.** (9c0c8c06)
+  - Each agent gets a random nonce at launch. It is handed over through a 0600 file and exported as `XY_HOOK_NONCE`, and hooks send it as `X-Xy-Hook-Nonce`.
+  - `XY_HOOK_NONCE_MODE` is `enforce` (the default, applied only while auth is on), `log` or `off`.
+- **claude.ai artifacts in Assets.** (ae494a8a, 8569fe16, eb1b9374, 26850a57)
+  - **Tiles.** Artifacts that agents published with the Artifact tool appear in the project's Assets tab, under the Web chip. A tile shows the type (Slides, Doc, Page or Dashboard), the title, the last publish time and the agent that published it.
+  - **Opening.** A tile opens the artifact on claude.ai in a new tab. The details sheet has "Open artifact", the first and last publish times, the version and the publisher.
+  - **Index.** URL, title and type are read once from the session transcript into a new `artifact_calls` table, so they survive a deleted transcript. Later publishes of the same artifact map onto one entry.
+  - **References.** Agent messages that mention an already published artifact count as references.
+  - **Updates.** The index updates after each Artifact tool call (PostToolUse hook).
+  - **Rebuild.** The index version is now 2, so asset refs are rebuilt once after the upgrade. Stars, hides and notes are kept.
+- **Per-device notification switches.** (d89942c4, 270ab899)
+  - **The bell** controls only the device it is tapped on. Enabling asks for permission within the tap, subscribes and sends one test push. Muting keeps the subscription.
+  - **Database.** `push_subscriptions` gains `agents_enabled`, `tasks_enabled`, `device_label` and `last_seen_at`. The old global switches seed these once and no longer gate sends.
+  - **New endpoints:** `POST /api/push/device` and `POST /api/push/test`.
+  - **Subscriptions** are deleted only on a 404 or 410 from the push service. The 14-day prune is removed.
+
+### Changed
+
+- **Backend bind and request guard.** (6ea5289a)
+  - **Bind.** uvicorn listens on `BACKEND_HOST` (default `127.0.0.1`).
+  - **Request guard.** It is active even with `DISABLE_AUTH=1`.
+    - It allows only known Host values: IP literals, `localhost`, this machine's hostname, `*.ts.net` and `XY_ALLOWED_HOSTS`.
+    - Writes and every WebSocket need a matching Origin, or none.
+    - It refuses `Origin: null` outside `/api/preview/t|p/`.
+    - It accepts `/api/hooks/*` only from loopback.
+    - Rejections are logged as `REQUEST_GUARD`.
+  - **Auth-exempt list.** It now lists exact paths and methods.
+- **Tokens in URLs.** `?token=` is accepted only as a 12-hour media token, on GET/HEAD to `/api/files/`, `/api/thumbs/` and `/api/uploads/`. Session tokens in URLs are refused. Exempt routes that take a body require `Content-Type: application/json` and answer 415 otherwise. (9bd85399)
+- **HTTPS proxy.** (d3f5c6a0, 746ce652)
+  - It sets `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` from the real peer, so the limiter sees the client IP.
+  - It masks tokens in its log.
+  - It returns 404 for `/api/hooks/*` in any spelling.
+- **Raw HTML, SVG and XML file responses.** Responses from `/api/files`, `/api/uploads`, the `/api/thumbs` fallback and `download=1` are sent with `Content-Security-Policy: sandbox` and `nosniff`. HTML previews still run through `/api/preview/t/`. (7410fc5d)
+- **Access logs.** They mask `?token=`, `?ticket=`, preview and probe-trigger path tokens, and Dropbox OAuth parameters. Existing log files are not rewritten. (346f3d96)
+- **Service worker.** The app registers it itself and checks for updates every 30 min and on resume. The reload after an update waits while the app is on /login or a text field has focus. (af2edef7)
+- **Certificate regeneration.** It rejects DNS names that start with `-` and malformed IPs, and ends mkcert's flags with `--`. (5f81c5db)
+- **`.env.example`.** It sets `DISABLE_AUTH=0` explicitly. (083df9e8)
+
+### Fixed
+
+- **iPhone listed as iPad.** An iPhone set to "Request Desktop Website" sends the Mac Safari User-Agent, as iPadOS does, so it was labelled "iPad" under Signed-in devices. When a Mac User-Agent comes with touch support, the label now depends on the screen size. Existing sessions keep their label until the next login. (afa64d55)
+
 ## [0.18.0] - 2026-10-21
 
 Adds an Assets tab to the project page. It shows, in one grid, the images, videos, HTML pages and web apps, PDFs, office documents and 3D files that agents referred to in a project's chats. Each file can be starred, hidden or given a note, one at a time or many at once in select mode. Tile thumbnails are square crops rendered in the background, so the grid does not wait on large images or videos. Also: compact summaries that Claude Code prefixes with a note are imported as system messages again, and summaries already stored as user messages are corrected on the next sync.
