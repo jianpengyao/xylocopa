@@ -393,8 +393,15 @@ export function deviceLabel() {
   const ua = nav.userAgent || "";
   let os = "";
   if (/iPhone|iPod/.test(ua)) os = "iPhone";
-  // iPadOS 13+ Safari reports a Mac User-Agent; touch support tells them apart.
-  else if (/iPad/.test(ua) || (/Macintosh/.test(ua) && nav.maxTouchPoints > 1)) os = "iPad";
+  else if (/iPad/.test(ua)) os = "iPad";
+  // iPadOS 13+ Safari reports a Mac User-Agent, and so does an iPhone set to
+  // "Request Desktop Website"; touch support tells them from a Mac, and the
+  // screen from each other (short side: iPhone ≤ 440 pt, iPad ≥ 744 pt).
+  // Screen size unknown (0): iPad, as before.
+  else if (/Macintosh/.test(ua) && nav.maxTouchPoints > 1) {
+    const side = screenShortSide();
+    os = side > 0 && side < 600 ? "iPhone" : "iPad";
+  }
   else if (/Android/.test(ua)) os = "Android";
   else if (/Macintosh|Mac OS X/.test(ua)) os = "Mac";
   else if (/Windows/.test(ua)) os = "Windows";
@@ -411,6 +418,14 @@ export function deviceLabel() {
   } catch { /* matchMedia unavailable */ }
   if (standalone) browser = "Installed app";
   return [os, browser].filter(Boolean).join(" · ") || null;
+}
+
+function screenShortSide() {
+  try {
+    return Math.min(screen.width || 0, screen.height || 0);
+  } catch {
+    return 0;
+  }
 }
 
 function _withDeviceLabel(body, label) {
