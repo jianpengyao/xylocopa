@@ -155,11 +155,11 @@ export default defineConfig({
           })
           httpServer.on('secureConnection', (tls) => {
             if (isLoopback(tls)) return
-            console.log(`[conn] ${now()} ${peerOf(tls)} tls-ok ${tls.getProtocol?.() || '?'} alpn=${tls.alpnProtocol || '-'} resumed=${tls.isSessionReused?.() ? 1 : 0}`)
+            console.log(`[conn] ${now()} ${peerOf(tls)} tls-ok ${tls.getProtocol?.() || '?'} alpn=${tls.alpnProtocol || '-'} resumed=${tls.isSessionReused?.() ? 1 : 0} sni=${tls.servername || '-'}`)
           })
           httpServer.on('tlsClientError', (err, tls) => {
             if (tls && isLoopback(tls)) return
-            console.log(`[conn] ${now()} ${tls ? peerOf(tls) : '?'} tls-error ${err.code || ''} ${String(err.message || err).slice(0, 160)}`)
+            console.log(`[conn] ${now()} ${tls ? peerOf(tls) : '?'} tls-error sni=${tls?.servername || '-'} ${err.code || ''} ${String(err.message || err).slice(0, 160)}`)
           })
         }
         // After Vite's SPA fallback has rewritten "/" and app routes to
