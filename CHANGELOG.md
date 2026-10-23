@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-23
+
+Maintenance release for the iOS home-screen app.
+
+An iPhone had the server's root certificate profile installed, but full trust was never turned on. It ran for months on Safari's temporary "visit this website" exception. When iOS dropped that exception, the phone refused every TLS handshake (alert `certificate_unknown`), and the offline page kept advising a VPN toggle. Nothing in the logs showed that the connections reached the server.
+
+Changes in this release:
+- The preview server logs each connection's TLS outcome.
+- The offline page points at certificate trust when connections are refused immediately.
+- The setup guide and docs make full trust a required iOS step.
+
+### Upgrade notes
+
+- **Frontend only.** `./upgrade.sh` or `./run.sh restart` rebuilds it. The server is unchanged.
+- **iPhone and iPad users:** open Settings › General › About › Certificate Trust Settings and check that the server's root (`mkcert …` or `xylocopa`) is switched on. If it is off, the app can stop loading at any time. Opening the address in Safari and tapping "visit this website" only restores it temporarily.
+
+### Fixed
+
+- **Offline page advice when connections are refused at once.**
+  - The cause: a device that does not trust the server certificate rejects every handshake within milliseconds. A fetch reports that only as "Load failed", and the hint used to say only "toggle Tailscale/VPN".
+  - Two probes in a row that fail within 2 s while the device is online now switch the hint. The new text says to turn the VPN on if it is off. If the VPN is on and the server is running, it says the device most likely does not trust the server certificate.
+  - On iPhone and iPad, including desktop mode (Macintosh user agent with touch), the hint gives the Certificate Trust Settings path. Other devices get a generic line.
+  - Timeouts and offline spells keep the existing VPN and offline hints, and the hint still appears after 15 s.
+  - The `xy-offline-diag` record counts fast failures (`fast`).
+  - (7acfb0bf, 932b522d)
+- **Setup guide: full trust is required on iOS.**
+  - Step 3 is now "Enable full trust (required)" and names the "Enable full trust for root certificates" switch.
+  - A note explains that installing the profile alone leaves the app depending on Safari's temporary exception.
+  - (8843dd08)
+
+### Added
+
+- **Connection log in the preview server.**
+  - Non-loopback clients get `[conn]` lines in the frontend log: `tcp-open`, then either `tls-ok` (protocol, ALPN, resumption, SNI) or `tls-error` (code, SNI), then `close` (duration and bytes).
+  - With these lines, three cases can be told apart: packets that never arrive, a certificate the device rejects, and a connection that never sends a request.
+  - (2fe26b7c, 4ca5700d)
+
+### Documentation
+
+- **`docs/install-cert.md`.**
+  - New iPhone/iPad section with the full-trust step and what happens without it.
+  - The certificate is downloaded from `/api/cert`, which serves the mkcert root when mkcert is set up. Copying the leaf `selfsigned.crt` is wrong in that case.
+  - Notes on the downloaded and copied file names.
+  - (8843dd08, 932b522d)
+
 ## [0.19.0] - 2026-10-21
 
 Security release. The server now keeps login sessions: each signed-in device is listed under Monitor › Security and can be signed out on its own, and the idle lock and a 90-day session lifetime are enforced by the server instead of the browser. Password protection can be turned on or off from the same page, and the installer sets the web UI password right after the first start. The backend listens on 127.0.0.1 by default, a request guard checks Host and Origin on every request, and agent hooks carry a per-agent nonce. Also: claude.ai artifacts that agents publish appear in the Assets tab, and the notification bell turns notifications on or off for the current device only.
