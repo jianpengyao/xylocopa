@@ -134,6 +134,34 @@ export default defineConfig({
           if (isIndexRequest(req)) return serveIndex(req, res)
           next()
         })
+        // Connection log for non-loopback clients: TCP accept, TLS result,
+        // close. With no [access] line from the phone the tunnel still
+        // carried traffic both ways, so "packets never arrived", "TLS was
+        // rejected" (untrusted root, client abort) and "connected but never
+        // sent a request" could not be told apart.
+        const httpServer = server.httpServer
+        if (httpServer) {
+          const now = () => new Date().toISOString()
+          const peerOf = (sock) => `${(sock.remoteAddress || '?').replace(/^::ffff:/, '')}:${sock.remotePort}`
+          const isLoopback = (sock) => /^(::ffff:)?127\.|^::1$/.test(sock.remoteAddress || '')
+          httpServer.on('connection', (sock) => {
+            if (isLoopback(sock)) return
+            const t0 = Date.now()
+            const peer = peerOf(sock)
+            console.log(`[conn] ${now()} ${peer} tcp-open`)
+            sock.on('close', (hadError) => {
+              console.log(`[conn] ${now()} ${peer} close ${Date.now() - t0}ms rx=${sock.bytesRead} tx=${sock.bytesWritten}${hadError ? ' error' : ''}`)
+            })
+          })
+          httpServer.on('secureConnection', (tls) => {
+            if (isLoopback(tls)) return
+            console.log(`[conn] ${now()} ${peerOf(tls)} tls-ok ${tls.getProtocol?.() || '?'} alpn=${tls.alpnProtocol || '-'} resumed=${tls.isSessionReused?.() ? 1 : 0}`)
+          })
+          httpServer.on('tlsClientError', (err, tls) => {
+            if (tls && isLoopback(tls)) return
+            console.log(`[conn] ${now()} ${tls ? peerOf(tls) : '?'} tls-error ${err.code || ''} ${String(err.message || err).slice(0, 160)}`)
+          })
+        }
         // After Vite's SPA fallback has rewritten "/" and app routes to
         // /index.html, before its own index.html middleware.
         return () => {
