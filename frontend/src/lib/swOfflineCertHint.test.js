@@ -78,6 +78,7 @@ function mount({ userAgent, maxTouchPoints, onLine = true } = {}) {
   )(win, doc, navigator, location, fetch, caches, window.sessionStorage, window.localStorage, AbortController);
   return {
     calls: fetch.calls,
+    navigator,
     location,
     hint: document.getElementById("hint"),
     diag: () => JSON.parse(window.localStorage.getItem(DIAG) || "null"),
@@ -134,7 +135,7 @@ describe("offline page certificate hint", () => {
     expect(page.hint.textContent).toMatch(/If Tailscale or another VPN is off, turn it on\./);
     expect(page.hint.textContent).toContain("does not trust the server’s certificate");
     expect(page.hint.textContent).toContain(IOS_PATH);
-    expect(page.hint.textContent).toMatch(/restart the phone if it still fails/);
+    expect(page.hint.textContent).toMatch(/restart the device if it still fails/);
   });
 
   it("is still hidden before 15s, like the VPN hint", async () => {
@@ -197,6 +198,21 @@ describe("offline page certificate hint", () => {
     await failNext(page);
     await failNext(page);
     expect(page.hint.textContent).toMatch(/^This device is offline\./);
+  });
+
+  // Coming back online while the tunnel is still re-establishing: fast
+  // failures counted during the offline spell must not make the very first
+  // online failure read as a certificate problem.
+  it("does not count fast failures while offline toward the streak", async () => {
+    const page = mount({ userAgent: IPHONE_UA, maxTouchPoints: 5, onLine: false });
+    const nav = page.navigator;
+    await failNext(page);
+    await failNext(page);
+    nav.onLine = true;
+    await failNext(page);
+    expect(page.hint.textContent).toMatch(/^This device can’t reach the server\./);
+    await failNext(page);
+    expect(page.hint.textContent).toContain("does not trust the server’s certificate");
   });
 
   it("counts fast failures in xy-offline-diag", async () => {

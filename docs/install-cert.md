@@ -8,6 +8,8 @@ scp user@server-ip:~/xylocopa-main/certs/selfsigned.crt ~/xylocopa.crt
 
 If the certificate was regenerated with mkcert, copy the mkcert root instead: `~/.local/share/mkcert/rootCA.pem` on a Linux server, `~/Library/Application Support/mkcert/rootCA.pem` on a macOS server.
 
+The commands below call the file `xylocopa.crt`. A download from `/api/cert` is named `xylocopa-ca.crt` (mkcert root) or `xylocopa.crt`, and a copied mkcert root is `rootCA.pem`, so rename it or adjust the path. On Linux the `.crt` extension is required.
+
 > **Tip:** If you're unsure how to install certificates on your OS, paste the relevant section below into Claude or another AI assistant, it can walk you through the steps interactively.
 
 > **Migrating from AgentHive?** Existing `agenthive.crt` / `agenthive-ca.crt` installations remain trusted, no action needed. Newly issued certs use the `xylocopa.crt` filename.
