@@ -26,10 +26,16 @@
  *     a probe still in flight and start a fresh one — a probe that began
  *     before the user toggled their VPN hangs on a dead connection until
  *     its 8s abort, and used to swallow every tap in the meantime;
- *   - says what failed (timeout vs connection error), and after a couple
- *     of failures tells the user the device cannot reach the server and to
- *     toggle Tailscale/VPN. No page-side action can repair the network, and
- *     every failure seen so far was the device's tunnel, not this app;
+ *   - says what failed (timeout vs connection error), and after 15s tells
+ *     the user the device cannot reach the server and to toggle
+ *     Tailscale/VPN. No page-side action can repair the network;
+ *   - when the probes keep failing within FAST_MS instead of hanging, the
+ *     hint also points at certificate trust: a device that does not trust
+ *     the server's certificate refuses every TLS handshake at once
+ *     (alert certificate_unknown in the server's [conn] log), which a
+ *     fetch only reports as "Load failed". On iOS that happens when the
+ *     root profile is installed but full trust is off and Safari's
+ *     temporary exception has been dropped;
  *   - "Reset app data" only resets after a probe proves the server is
  *     reachable. During an outage it would just remove this page (the
  *     next launch gets the browser's dead error page) and the push
@@ -83,17 +89,20 @@
     '<script>',
     '(function(){',
     'var FLAG="xy-offline-probe-ok",BOUNCES="xy-offline-bounces",DIAG="xy-offline-diag",MAX_BOUNCES=2;',
-    'var PROBE_MS=8000,HINT_MS=15000,STUCK_MS=20000;',
+    'var PROBE_MS=8000,HINT_MS=15000,STUCK_MS=20000,FAST_MS=2000;',
     'function store(get){return{get:function(k){try{return get().getItem(k)}catch(_){return null}},set:function(k,v){try{get().setItem(k,v)}catch(_){}},del:function(k){try{get().removeItem(k)}catch(_){}}}}',
     'var ss=store(function(){return sessionStorage}),ls=store(function(){return localStorage});',
     'var msg=document.getElementById("msg"),hint=document.getElementById("hint"),VPN_HINT=hint.textContent;',
     'var OFFLINE_HINT="This device is offline. Turn on Wi-Fi or cellular data \\u2014 this page reconnects by itself.";',
+    '/* Probes refused within FAST_MS, twice in a row: the server is reachable but the connection is rejected, most often because this device does not trust the server certificate. An iPhone in desktop mode reports "Macintosh". */',
+    'var ua=navigator.userAgent||"",IOS=/iPhone|iPad|iPod/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1);',
+    'var CERT_HINT="The connection is refused right away. If Tailscale or another VPN is off, turn it on. If it is on, this device most likely does not trust the server\\u2019s certificate: "+(IOS?"Settings \\u2192 General \\u2192 About \\u2192 Certificate Trust Settings \\u2192 turn on full trust for \\u201cmkcert\\u201d (or \\u201cxylocopa\\u201d). Then reopen this app, or restart the phone if it still fails.":"install the server\\u2019s CA certificate as a trusted root, then reopen this app.");',
     '/* state: "" = probing, "leaving" = reload in flight, "resetting" = wiping the worker. */',
-    'var delay=1000,timer=null,current=null,currentOk=null,seq=0,wd=0,state="",started=Date.now();',
+    'var delay=1000,timer=null,current=null,currentOk=null,seq=0,wd=0,state="",started=Date.now(),fastStreak=0;',
     'function say(t){msg.textContent=t}',
     'function noop(){}',
     '/* Kept across relaunches; index.html reports it once the app loads. */',
-    'function note(kind,why){var d=null;try{d=JSON.parse(ls.get(DIAG)||"null")}catch(_){}if(!d||typeof d!=="object")d={first:Date.now(),probes:0,timeouts:0,errors:0};d.probes++;d[kind]++;d.last=Date.now();d.why=why;ls.set(DIAG,JSON.stringify(d))}',
+    'function note(kind,why,fast){var d=null;try{d=JSON.parse(ls.get(DIAG)||"null")}catch(_){}if(!d||typeof d!=="object")d={first:Date.now(),probes:0,timeouts:0,errors:0};d.probes++;d[kind]++;if(fast)d.fast=(d.fast||0)+1;d.last=Date.now();d.why=why;ls.set(DIAG,JSON.stringify(d))}',
     '/* WebKit keeps this page on screen while a reload is pending, with no request timeout on iOS: if nothing replaced the page, go back to probing. */',
     '/* WebKit fails every fetch from a page whose reload is still pending ("Load failed", never sent), so cancel that navigation first. */',
     'function cancelReload(){try{if(window.stop)window.stop()}catch(_){}}',
@@ -110,7 +119,7 @@
     ' if(state)return;',
     ' if(current){if(!manual)return;current.abort()}',
     ' clearTimeout(timer);timer=null;',
-    ' var id=++seq,timedOut=false,ctl=("AbortController" in window)?new AbortController():null;',
+    ' var id=++seq,timedOut=false,t0=Date.now(),ctl=("AbortController" in window)?new AbortController():null;',
     ' var kill=setTimeout(function(){timedOut=true;if(ctl)ctl.abort()},PROBE_MS);',
     ' current={abort:function(){clearTimeout(kill);if(ctl)ctl.abort()}};currentOk=onOk;',
     ' if(manual)say(onOk===wipe?"Checking the server before resetting\\u2026":"Checking the server\\u2026");',
@@ -119,10 +128,11 @@
     ' },function(e){',
     '  if(id!==seq)return;clearTimeout(kill);current=null;',
     '  var why=timedOut?"no response in "+(PROBE_MS/1000)+"s":"connection failed"+(e&&e.message?" ("+e.message+")":"");',
-    '  note(timedOut?"timeouts":"errors",why);',
+    '  var fast=!timedOut&&Date.now()-t0<FAST_MS;fastStreak=fast?fastStreak+1:0;',
+    '  note(timedOut?"timeouts":"errors",why,fast);',
     '  var s=Math.round((Date.now()-started)/1000);',
     '  say(onOk===wipe?"The server is unreachable ("+why+"). Resetting would not help \\u2014 it only works once the server answers. Still retrying.":"Can\\u2019t reach the server: "+why+". Offline for "+s+"s, retrying on its own.");',
-    '  hint.textContent=navigator.onLine===false?OFFLINE_HINT:VPN_HINT;',
+    '  hint.textContent=navigator.onLine===false?OFFLINE_HINT:fastStreak>=2?CERT_HINT:VPN_HINT;',
     '  if(s*1000>=HINT_MS)hint.hidden=false;',
     '  schedule(delay);delay=Math.min(delay*1.5,5000);',
     ' });',
