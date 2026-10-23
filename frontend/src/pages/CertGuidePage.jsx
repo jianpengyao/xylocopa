@@ -23,8 +23,14 @@ const iosCertSteps = [
   },
   {
     num: 3,
-    title: "Enable trust",
-    desc: "Settings → General → About → Certificate Trust Settings → toggle on \"mkcert\" or \"xylocopa\".",
+    title: "Enable full trust (required)",
+    desc: "Settings → General → About → Certificate Trust Settings → under \"Enable full trust for root certificates\", turn on \"mkcert\" or \"xylocopa\" and tap Continue.",
+    // Installing the profile does not make iOS trust it for HTTPS. Without
+    // this switch the app only loads on Safari's per-site "visit this
+    // website" exception, which iOS can drop without notice; every load is
+    // then refused (TLS alert certificate_unknown) until the exception is
+    // granted again. Seen on an iPhone that ran this way for months.
+    note: "Installing the profile is not enough. Without this switch the app only works on Safari's temporary \"visit this website\" exception, and it stops loading whenever iOS drops that exception.",
   },
 ];
 
@@ -239,6 +245,11 @@ function StepList({ steps, onLinkClick }) {
                 </>
               )}
             </p>
+            {s.note && (
+              <p className="text-xs mt-1.5 rounded-lg px-2.5 py-1.5 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                {s.note}
+              </p>
+            )}
           </div>
         </div>
       ))}
