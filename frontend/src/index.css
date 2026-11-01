@@ -1997,6 +1997,46 @@ body::after {
 .safe-area-pt {
   padding-top: env(safe-area-inset-top, 0px);
 }
+/* iOS 26+ home-screen apps: WebKit hides the top scroll-edge blur and paints the
+   status bar in a solid color only when it finds a fixed box at the top edge
+   (LocalFrameView::fixedContainerEdges). It hit-tests the top center 4px down;
+   the box must span >=90% of the width and be taller than 10px to contribute its
+   color. background-clip:text paints nothing: the color comes from computed style.
+   z-index: above page headers (z-10..z-30), below overlays (z-40+), so a
+   full-screen overlay takes over the status bar while it is open. */
+.ios-status-strip {
+  display: none;
+}
+:root {
+  --header-min-top: 1rem;
+}
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone), (display-mode: fullscreen) {
+    .ios-status-strip {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 12px;
+      z-index: 35;
+      pointer-events: none;
+      background-color: var(--color-page);
+      -webkit-background-clip: text;
+      background-clip: text;
+    }
+    html[data-status-band="surface"] .ios-status-strip {
+      background-color: var(--color-surface);
+    }
+  }
+  /* The system status bar now sits above the web view, so the title row keeps
+     its screen position without the extra minimum padding. */
+  @media (display-mode: standalone) and (orientation: portrait) {
+    :root {
+      --header-min-top: 0px;
+    }
+  }
+}
 .safe-area-toast {
   top: max(1rem, calc(env(safe-area-inset-top, 0px) + 0.5rem));
 }

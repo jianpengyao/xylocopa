@@ -144,6 +144,12 @@ function AppRoutes({ themeProps }) {
   const location = useLocation();
   const bgLocation = location.state?.backgroundLocation;
 
+  // The iOS status bar takes its color from .ios-status-strip (index.css), which
+  // has to match what sits below it: chat header and split view are bg-surface, the rest bg-page.
+  useEffect(() => {
+    document.documentElement.dataset.statusBand = /^\/(split|agents\/[^/]+)/.test(location.pathname) ? "surface" : "page";
+  }, [location.pathname]);
+
   // Persist current route so app resumes where you left off
   useEffect(() => {
     const path = location.pathname;
