@@ -436,35 +436,37 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --color-danger-rgb:     220 38 38;
 }
 
-/* Silver — flat industrial gray: the WHOLE interface lives at the
-   user-sampled #c2c4c7 tone. Cards sit one small step above the ground
-   and structure comes from hairline borders, not value jumps — the
-   floating-bright-card model always read as jarring islands on a
-   mid-gray canvas in this app's edge-to-edge layout. */
+/* Silver — industrial gray on the user-sampled #c2c4c7 ground. Cards are
+   a lighter silver one clear step up (+7 L*), with chips, inputs and
+   hover going darker than the card (as in Ash). The flat model (+3 L*)
+   lost the cards entirely; the old white / off-white panels (+17-21 L*)
+   read as jarring islands. This sits between the two. */
 .theme-silver {
   --color-page:       #c2c4c7;
-  --color-surface:    #cbcdd0;
-  --color-input:      #d4d6d9;
-  --color-elevated:   #dadcdf;
-  --color-hover:      #b3b5b9;
-  --color-inset:      #b6b8bc;
+  --color-surface:    #d6d8db;
+  --color-input:      #cbcdd0;
+  --color-elevated:   #c4c6c9;
+  --color-hover:      #b9bbbf;
+  --color-inset:      #c9cbce;
 
-  --color-heading:    #26282b;
-  --color-body:       #43464a;
-  --color-label:      #5b5e63;
-  --color-dim:        #63666b;
-  --color-faint:      #7c7f84;
+  /* Ink darkened for the mid-gray range: heading 11.3, body 7.9,
+     label 5.3, dim 4.4:1 on the card (was 9.3 / 6.0 / 4.1 / 3.6). */
+  --color-heading:    #202124;
+  --color-body:       #383b3e;
+  --color-label:      #525459;
+  --color-dim:        #5e6065;
+  --color-faint:      #7a7d81;
   --color-ghost:      #8a8c91;   /* was 1.69 on the #c2c4c7 page */
 
-  --color-divider:    #b4b6ba;
-  --color-edge:       #a7a9ad;
-  --color-ring-hover: #96989d;
+  --color-divider:    #b9bbbf;
+  --color-edge:       #a5a7ab;
+  --color-ring-hover: #95979c;
 
-  --color-hint:       #7c7f84;
-  --color-shadow:     rgba(30,32,35,0.10);
-  --color-skel:       #d4d6d9;
-  --color-glass:      #cbcdd0;
-  --color-glass-nav:  #cfd1d4;
+  --color-hint:       #7a7d81;
+  --color-shadow:     rgba(30,32,35,0.12);
+  --color-skel:       #cbcdd0;
+  --color-glass:      #d5d7da;
+  --color-glass-nav:  #d9dbde;
   --color-glass-edge: rgba(255,255,255,0.35);
 
   --color-bubble:         #45484d;
@@ -483,34 +485,36 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --chart-mute:           35%;
 }
 
-/* Clay — warm greige x brown: the flat tonal model Silver validated,
-   shifted warm. Greige ground, taupe surfaces one small step up,
+/* Clay — warm greige x brown: Silver's lit-card model shifted warm.
+   Greige ground, lighter taupe cards one clear step up (+7 L*),
    espresso ink, and a cocoa-leather bubble — the classic gray-with-tan
    pairing, which also sits naturally beside the app's amber tags. */
 .theme-clay {
   --color-page:       #cac5be;
-  --color-surface:    #d2cdc6;
-  --color-input:      #dad5ce;
-  --color-elevated:   #e0dbd4;
-  --color-hover:      #b9b4ad;
-  --color-inset:      #bcb7b0;
+  --color-surface:    #ddd9d2;
+  --color-input:      #d4d0c9;
+  --color-elevated:   #ccc7c0;
+  --color-hover:      #c0bbb4;
+  --color-inset:      #d1ccc5;
 
-  --color-heading:    #2b2723;
-  --color-body:       #48423c;
-  --color-label:      #5f5952;
-  --color-dim:        #665f57;
-  --color-faint:      #7f776e;
+  /* heading 11.2, body 8.0, label 5.2, dim 4.4:1 on the card
+     (was 9.4 / 6.3 / 4.4 / 4.0). */
+  --color-heading:    #26221f;
+  --color-body:       #403a35;
+  --color-label:      #5a554e;
+  --color-dim:        #686058;
+  --color-faint:      #857c73;
   --color-ghost:      #989087;
 
-  --color-divider:    #b7b2ab;
-  --color-edge:       #a8a29a;
-  --color-ring-hover: #968f87;
+  --color-divider:    #c0bbb4;
+  --color-edge:       #aaa49c;
+  --color-ring-hover: #9a948c;
 
-  --color-hint:       #7f776e;
-  --color-shadow:     rgba(43,39,35,0.10);
-  --color-skel:       #dad5ce;
-  --color-glass:      #d2cdc6;
-  --color-glass-nav:  #d6d1ca;
+  --color-hint:       #857c73;
+  --color-shadow:     rgba(43,39,35,0.12);
+  --color-skel:       #d4d0c9;
+  --color-glass:      #dcd8d1;
+  --color-glass-nav:  #e0dcd5;
   --color-glass-edge: rgba(255,255,255,0.35);
 
   --color-bubble:         #6f4e37;
@@ -673,12 +677,12 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
     --color-glass-nav: rgba(246,247,249,0.65);
   }
   .theme-silver {
-    --color-glass: rgba(203,205,208,0.72);
-    --color-glass-nav: rgba(207,209,212,0.68);
+    --color-glass: rgba(213,215,218,0.72);
+    --color-glass-nav: rgba(217,219,222,0.68);
   }
   .theme-clay {
-    --color-glass: rgba(210,205,198,0.72);
-    --color-glass-nav: rgba(214,209,202,0.68);
+    --color-glass: rgba(220,216,209,0.72);
+    --color-glass-nav: rgba(224,220,213,0.68);
   }
   .theme-graphite {
     --color-glass: rgba(45,51,59,0.7);
@@ -705,8 +709,8 @@ html.no-glass.theme-solarized-light { --color-glass: #eee8d5; --color-glass-nav:
 html.no-glass.theme-nord            { --color-glass: #353c4a; --color-glass-nav: #3a4152; }
 html.no-glass.theme-everforest      { --color-glass: #313a40; --color-glass-nav: #364046; }
 html.no-glass.theme-ash             { --color-glass: #f4f5f7; --color-glass-nav: #f7f8f9; }
-html.no-glass.theme-silver          { --color-glass: #cbcdd0; --color-glass-nav: #cfd1d4; }
-html.no-glass.theme-clay            { --color-glass: #d2cdc6; --color-glass-nav: #d6d1ca; }
+html.no-glass.theme-silver          { --color-glass: #d5d7da; --color-glass-nav: #d9dbde; }
+html.no-glass.theme-clay            { --color-glass: #dcd8d1; --color-glass-nav: #e0dcd5; }
 html.no-glass.theme-graphite        { --color-glass: #2d333b; --color-glass-nav: #313842; }
 html.no-glass.theme-nord-light      { --color-glass: #e0e7f1; --color-glass-nav: #e5ebf4; }
 html.no-glass .glass-bar,
