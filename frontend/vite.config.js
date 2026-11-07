@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { runtimeCaching } from './sw-runtime-caching.js'
 import { proxyBypass, redactUrl } from './proxy-bypass.js'
+import scalablePx from './postcss-scalable-px.js'
 
 // Load self-signed certs for HTTPS (needed for microphone access over LAN)
 const certsDir = path.resolve(__dirname, '../certs')
@@ -238,6 +239,11 @@ export default defineConfig({
       },
     }),
   ],
+  // px in our CSS -> rem, so the Settings > Text size scale reaches the
+  // arbitrary px utilities too (see postcss-scalable-px.js).
+  css: {
+    postcss: { plugins: [scalablePx()] },
+  },
   server: {
     fs: {
       // Allow importing docs/oauth/dropbox/relay.js from tests

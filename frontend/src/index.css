@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── Text size ── Settings > Text size sets --xy-text-scale on <html>
+   (src/lib/textScale.js; index.html applies it before first paint). Every
+   rem follows the root font-size: Tailwind's scale, plus the px utilities
+   that postcss-scalable-px.js rewrites to rem, so text, spacing and icons
+   grow together. A percentage keeps the browser's own default font size
+   underneath. */
+html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
+
 /* ── Theme Color Tokens ── */
 :root {
   color-scheme: light;

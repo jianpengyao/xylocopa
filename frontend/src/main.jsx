@@ -8,6 +8,11 @@ import { registerServiceWorker } from "./lib/swUpdate";
 import { setupFrameLogger } from "./lib/frameLogger";
 import { prefetchHeavyChunks } from "./lib/prefetchChunks";
 import { applyEinkModeFromStorage } from "./lib/einkMode";
+import { initTextScale } from "./lib/textScale";
+
+// Settings > Text size: re-apply the stored scale (index.html already did,
+// pre-paint) and keep its narrow-window cap current on resize.
+initTextScale();
 
 // Frame-by-frame DOM mutation logger (off by default).
 // Enable: localStorage.setItem("ah:frame-log", "1") then reload.

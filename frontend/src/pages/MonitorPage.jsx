@@ -8,6 +8,7 @@ import { useMonitor } from "../contexts/MonitorContext";
 import { getEinkMode, setEinkMode } from "../lib/einkMode";
 import { getOrbEnabled, setOrbEnabled } from "../lib/orbMode";
 import ThemeSettings from "../components/ThemeSettings";
+import TextSizeSettings from "../components/TextSizeSettings";
 import SecuritySettings from "../components/SecuritySettings";
 
 
@@ -421,6 +422,9 @@ export default function MonitorPage({ theme, onToggleTheme }) {
 
         {/* Display: theme palettes + custom editor */}
         <ThemeSettings theme={theme} />
+
+        {/* Display: text size (whole-UI scale, per device) */}
+        <TextSizeSettings />
 
         {/* Display: assistant character (orb) toggle */}
         <section className="rounded-xl bg-surface shadow-card p-4">

@@ -93,6 +93,18 @@
         }
         var mc=localStorage.getItem("xy:themecolor-"+base)||(base==="dark"?"#030712":"#ffffff");
         document.querySelector('meta[name="theme-color"]').setAttribute("content",mc);
+        // Text size (Settings > Text size), so first paint is already
+        // scaled. Mirrors src/lib/textScale.js: range .85-1.5; above 1 the
+        // window must still hold 320 design px.
+        try {
+          var ts=parseFloat(localStorage.getItem("xy:text-scale"));
+          if(ts>=0.85&&ts<=1.5&&ts!==1){
+            var lw=document.documentElement.clientWidth||innerWidth;
+            if(ts>1&&lw)ts=Math.max(1,Math.min(ts,lw/320));
+            ts=Math.round(ts*1000)/1000;
+            if(ts!==1)document.documentElement.style.setProperty("--xy-text-scale",String(ts));
+          }
+        } catch(_){}
       })();
     </script>
   </head>
