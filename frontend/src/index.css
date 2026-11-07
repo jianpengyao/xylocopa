@@ -257,31 +257,35 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --chart-mute:           18%;
 }
 
-/* Solarized Light — warm cream base3/base2 family. */
+/* Solarized Light — warm cream base3/base2 family. Cards are base3 on a
+   base2 ground: lighter cards, like Solarized Dark's base02-on-base03.
+   The old darker-cream cards on base3 read as stains, not panels. */
 .theme-solarized-light {
-  --color-page:       #fdf6e3;
-  --color-surface:    #f3ecd9;
-  --color-input:      #eee8d5;
-  --color-elevated:   #e4ddc8;
-  --color-hover:      #d8d1bc;
-  --color-inset:      #fdf6e3;
+  --color-page:       #eee8d5;
+  --color-surface:    #fdf6e3;
+  --color-input:      #f3ecd9;
+  --color-elevated:   #e8e1cd;
+  --color-hover:      #ddd6c1;
+  --color-inset:      #eee8d5;
 
-  --color-heading:    #073642;
-  --color-body:       #586e75;
-  --color-label:      #657b83;
-  --color-dim:        #74868c;   /* base0 darkened to clear the ~3.2 dim floor on cream */
-  --color-faint:      #93a1a1;
-  --color-ghost:      #b0bcbb;
+  /* Text one step deeper along Solarized's own blue-gray line: body was
+     base01 at 4.6:1 on the card, now 8.5:1; heading base03. */
+  --color-heading:    #002b36;
+  --color-body:       #364b51;
+  --color-label:      #51676d;
+  --color-dim:        #5e747b;
+  --color-faint:      #889596;
+  --color-ghost:      #aab5b5;
 
-  --color-divider:    #eee8d5;
-  --color-edge:       #d5cdb4;
+  --color-divider:    #e6dfca;
+  --color-edge:       #d3cbb2;
   --color-ring-hover: #c3bba2;
 
-  --color-hint:       #93a1a1;
-  --color-shadow:     rgba(101,123,131,0.12);
-  --color-skel:       #eee8d5;
-  --color-glass:      #eee8d5;
-  --color-glass-nav:  #f2ecd9;
+  --color-hint:       #889596;
+  --color-shadow:     rgba(88,110,117,0.14);
+  --color-skel:       #f3ecd9;
+  --color-glass:      #f7f0dd;
+  --color-glass-nav:  #f9f2df;
   --color-glass-edge: rgba(255,255,255,0.5);
 
   /* Canonical solarized blue + white — the iMessage treatment on cream. */
@@ -579,31 +583,35 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --color-danger-rgb:     229 83 75;
   --chart-mute:           15%;
 }
-/* Nord Light — Snow Storm ground with Polar Night ink; pairs with Nord. */
+/* Nord Light — Snow Storm ground with Polar Night ink; pairs with Nord.
+   Blue-cast snow ground under near-white snow cards (+6 L*): the old
+   darker-blue cards on a lighter ground (-2.5 L*) read as dull wells. */
 .theme-nord-light {
-  --color-page:       #e9eef6;
-  --color-surface:    #e0e7f1;
-  --color-input:      #d3dce9;
-  --color-elevated:   #c5d1e1;
-  --color-hover:      #b6c4d8;
-  --color-inset:      #e9eef6;
+  --color-page:       #dfe5ee;
+  --color-surface:    #f4f6fa;
+  --color-input:      #e8ecf3;
+  --color-elevated:   #dde3ec;
+  --color-hover:      #cfd7e3;
+  --color-inset:      #e8ecf3;
 
-  --color-heading:    #2e3440;
-  --color-body:       #434c5e;
-  --color-label:      #4c566a;
-  --color-dim:        #6d7a92;
-  --color-faint:      #8f9aae;
-  --color-ghost:      #99a4b8;   /* was 1.66 on the snow-storm surface */
+  /* heading 12.6, body 8.6, label 6.0, dim 4.6:1 on the card
+     (was 10.0 / 6.9 / 5.9 / 3.5). */
+  --color-heading:    #282e39;
+  --color-body:       #3f4759;
+  --color-label:      #545e73;
+  --color-dim:        #647188;
+  --color-faint:      #8993a7;
+  --color-ghost:      #9da9bd;   /* 2.2 on the card, 1.8 on the ground */
 
-  --color-divider:    #d3dce9;
-  --color-edge:       #bcc8d9;
-  --color-ring-hover: #a9b8cd;
+  --color-divider:    #d5dce7;
+  --color-edge:       #c0cad8;
+  --color-ring-hover: #aab7c9;
 
-  --color-hint:       #8f9aae;
-  --color-shadow:     rgba(46,52,64,0.08);
-  --color-skel:       #d3dce9;
-  --color-glass:      #e0e7f1;
-  --color-glass-nav:  #e5ebf4;
+  --color-hint:       #8993a7;
+  --color-shadow:     rgba(46,52,64,0.10);
+  --color-skel:       #e8ecf3;
+  --color-glass:      #edf1f6;
+  --color-glass-nav:  #f0f3f8;
   --color-glass-edge: rgba(255,255,255,0.5);
 
   /* nord10 frost blue, deepened a step for white ink. */
@@ -661,8 +669,8 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
     --color-glass-nav: rgba(10,62,76,0.7);
   }
   .theme-solarized-light {
-    --color-glass: rgba(238,232,213,0.68);
-    --color-glass-nav: rgba(242,236,217,0.65);
+    --color-glass: rgba(247,240,221,0.68);
+    --color-glass-nav: rgba(249,242,223,0.65);
   }
   .theme-nord {
     --color-glass: rgba(53,60,74,0.7);
@@ -689,8 +697,8 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
     --color-glass-nav: rgba(49,56,66,0.68);
   }
   .theme-nord-light {
-    --color-glass: rgba(224,231,241,0.68);
-    --color-glass-nav: rgba(229,235,244,0.65);
+    --color-glass: rgba(237,241,246,0.68);
+    --color-glass-nav: rgba(240,243,248,0.65);
   }
 }
 
@@ -705,14 +713,14 @@ html.no-glass.dark {
 /* Glass-incapable engines keep each palette's own opaque surface. */
 html.no-glass.theme-soft-dark       { --color-glass: #24262b; --color-glass-nav: #2a2c32; }
 html.no-glass.theme-solarized-dark  { --color-glass: #073642; --color-glass-nav: #0a3e4c; }
-html.no-glass.theme-solarized-light { --color-glass: #eee8d5; --color-glass-nav: #f2ecd9; }
+html.no-glass.theme-solarized-light { --color-glass: #f7f0dd; --color-glass-nav: #f9f2df; }
 html.no-glass.theme-nord            { --color-glass: #353c4a; --color-glass-nav: #3a4152; }
 html.no-glass.theme-everforest      { --color-glass: #313a40; --color-glass-nav: #364046; }
 html.no-glass.theme-ash             { --color-glass: #f4f5f7; --color-glass-nav: #f7f8f9; }
 html.no-glass.theme-silver          { --color-glass: #d5d7da; --color-glass-nav: #d9dbde; }
 html.no-glass.theme-clay            { --color-glass: #dcd8d1; --color-glass-nav: #e0dcd5; }
 html.no-glass.theme-graphite        { --color-glass: #2d333b; --color-glass-nav: #313842; }
-html.no-glass.theme-nord-light      { --color-glass: #e0e7f1; --color-glass-nav: #e5ebf4; }
+html.no-glass.theme-nord-light      { --color-glass: #edf1f6; --color-glass-nav: #f0f3f8; }
 html.no-glass .glass-bar,
 html.no-glass .glass-bar-nav {
   backdrop-filter: none;
