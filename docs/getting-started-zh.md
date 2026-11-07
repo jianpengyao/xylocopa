@@ -161,6 +161,7 @@ project 建好后，回 inbox 点开刚才那条任务，选上 project，点 **
 - **分叉对话。** 双击消息选 **Diverge**，从那条消息把对话分叉给一个带完整上下文的新 agent。其余触控操作见[手势速查](gestures.md)。
 - **网页终端。** chat header 里的终端图标直接 attach 到 agent 的 tmux 会话，任何浏览器都行，手机也可以。
 - **主题。** Monitor → Display 里有五套预设配色、自定义主题编辑器、墨水屏模式，以及实验性的 orb 助手开关。
+- **字号。** Monitor → Text size 可整体缩放文字、间距和图标（85%–150%，按设备分别保存）。手机上限约 120%，保证排版仍有约 320px 的宽度。
 - **第三方 / 本地模型。** 模型下拉只列 Anthropic 型号，但 Claude Code 对 Bedrock、Vertex、LiteLLM 的支持照常生效，设好环境变量即可，`.env` 里的 `CC_MODEL` 决定默认值（LiteLLM 实操见 [unsloth.ai/docs/basics/claude-code](https://unsloth.ai/docs/basics/claude-code)）。
 
 ---

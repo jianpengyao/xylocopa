@@ -161,6 +161,7 @@ Lessons that outlive a single attempt go to the project's `PROGRESS.md`, which i
 - **Fork a conversation.** Double-tap a bubble and choose **Diverge** to branch the chat at that message into a new agent with full context. The [gestures cheat sheet](gestures.md) lists the rest of the touch shortcuts.
 - **Web terminal.** The terminal icon in the chat header attaches to the agent's live tmux session from any browser, phone included.
 - **Themes.** Monitor → Display has five preset palettes, a custom theme editor, an e-ink mode, and the experimental orb assistant toggle.
+- **Text size.** Monitor → Text size scales all text together with spacing and icons (85%–150%, saved per device). Phones are capped near 120% so the layout keeps about 320px of room.
 - **Third-party models.** The model picker lists Anthropic models only, but Claude Code's Bedrock, Vertex, and LiteLLM support carries over through the usual env vars, with `CC_MODEL` in `.env` setting the default (LiteLLM walkthrough at [unsloth.ai/docs/basics/claude-code](https://unsloth.ai/docs/basics/claude-code)).
 
 ---
