@@ -55,8 +55,8 @@ export const PRESETS = [
     preview: { page: "#030712", surface: "#172030", text: "#f3f4f6" },
     core: { page: "#030712", surface: "#172030", heading: "#f3f4f6", body: "#d1d5db", edge: "#374151", bubble: "#155e75" } },
   { id: "graphite", name: "Graphite", base: "dark",
-    preview: { page: "#22272e", surface: "#2d333b", text: "#adbac7" },
-    core: { page: "#22272e", surface: "#2d333b", heading: "#c5d1de", body: "#adbac7", edge: "#444c56", bubble: "#135b84" } },
+    preview: { page: "#1c2128", surface: "#2d333b", text: "#b3c0ce" },
+    core: { page: "#1c2128", surface: "#2d333b", heading: "#cdd9e5", body: "#b3c0ce", edge: "#444c56", bubble: "#135b84" } },
   { id: "soft-dark", name: "Soft Dark", base: "dark",
     preview: { page: "#17181c", surface: "#27292e", text: "#e8e6e3" },
     core: { page: "#17181c", surface: "#27292e", heading: "#e8e6e3", body: "#c9c7c3", edge: "#41444b", bubble: "#375663" } },
@@ -64,11 +64,11 @@ export const PRESETS = [
     preview: { page: "#002b36", surface: "#073642", text: "#aebcba" },
     core: { page: "#002b36", surface: "#073642", heading: "#aebcba", body: "#90a2a4", edge: "#29525e", bubble: "#135b84" } },
   { id: "nord", name: "Nord", base: "dark",
-    preview: { page: "#2e3440", surface: "#3b4252", text: "#eceff4" },
-    core: { page: "#2e3440", surface: "#3b4252", heading: "#eceff4", body: "#d8dee9", edge: "#4c566a", bubble: "#4a6485" } },
+    preview: { page: "#282d38", surface: "#3b4252", text: "#eceff4" },
+    core: { page: "#282d38", surface: "#3b4252", heading: "#eceff4", body: "#d8dee9", edge: "#4c566a", bubble: "#4a6485" } },
   { id: "everforest", name: "Everforest", base: "dark",
-    preview: { page: "#272e33", surface: "#2d353b", text: "#d3c6aa" },
-    core: { page: "#272e33", surface: "#2d353b", heading: "#d3c6aa", body: "#b9ad93", edge: "#4a555b", bubble: "#3a515d" } },
+    preview: { page: "#1e2326", surface: "#2d353b", text: "#ded1b4" },
+    core: { page: "#1e2326", surface: "#2d353b", heading: "#ded1b4", body: "#c4b79d", edge: "#4a555b", bubble: "#3a515d" } },
 ];
 
 // Seed values for the custom editor, per base (= the default palettes).

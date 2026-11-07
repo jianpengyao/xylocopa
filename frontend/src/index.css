@@ -315,27 +315,31 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --chart-mute:           22%;
 }
 
-/* Nord — polar-night blue-grays, snow-storm text. */
+/* Nord — polar-night blue-grays, snow-storm text. The ground sits one
+   shade below nord0 so the nord1 cards stand +9.5 L* off it (was +6.3
+   on a mid-dark nord0 ground that read as fog); code blocks keep nord0. */
 .theme-nord {
-  --color-page:       #2e3440;
+  --color-page:       #282d38;
   --color-surface:    #3b4252;
   --color-input:      #434c5e;
   --color-elevated:   #4c566a;
   --color-hover:      #59657c;
   --color-inset:      #2e3440;
 
+  /* nord6/nord4 heading/body kept; secondary tiers lifted on nord1:
+     label 4.7 -> 5.2, dim 3.2 -> 4.1, faint 2.1 -> 2.7, ghost -> 1.96. */
   --color-heading:    #eceff4;
   --color-body:       #d8dee9;
-  --color-label:      #aab2c0;
-  --color-dim:        #8892a4;
-  --color-faint:      #6a7488;
-  --color-ghost:      #5d6678;   /* drag handles were 1.48 on surface at #525b6e */
+  --color-label:      #b3bbc9;
+  --color-dim:        #9ba6b8;
+  --color-faint:      #7a8499;
+  --color-ghost:      #646e80;
 
   --color-divider:    #434c5e;
   --color-edge:       #4c566a;
   --color-ring-hover: #5e6a82;
 
-  --color-hint:       #8892a4;
+  --color-hint:       #9ba6b8;
   --color-shadow:     rgba(0,0,0,0.35);
   --color-skel:       #3b4252;
   --color-glass:      #353c4a;
@@ -359,27 +363,31 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
   --chart-mute:           18%;
 }
 
-/* Everforest — muted forest greens, warm parchment text. */
+/* Everforest — muted forest greens, warm parchment text. Ground is the
+   hard variant's bg_dim, cards the medium bg0: +8.3 L* (was +3.2, the
+   weakest card edge of all presets). Code blocks keep the hard bg0. */
 .theme-everforest {
-  --color-page:       #272e33;
+  --color-page:       #1e2326;
   --color-surface:    #2d353b;
   --color-input:      #343f44;
   --color-elevated:   #3d484d;
   --color-hover:      #475258;
   --color-inset:      #272e33;
 
-  --color-heading:    #d3c6aa;
-  --color-body:       #b9ad93;
+  /* Parchment one step brighter (heading 7.4 -> 8.2:1, body 5.6 -> 6.3),
+     dim lifted 3.8 -> 4.1; grey2 label kept. */
+  --color-heading:    #ded1b4;
+  --color-body:       #c4b79d;
   --color-label:      #9da9a0;
-  --color-dim:        #859289;
-  --color-faint:      #6b766d;
+  --color-dim:        #8a978e;
+  --color-faint:      #6e7970;
   --color-ghost:      #59645b;   /* was 1.81 on surface — hold the ~1.9 ghost floor */
 
   --color-divider:    #343f44;
   --color-edge:       #4a555b;
   --color-ring-hover: #56636a;
 
-  --color-hint:       #859289;
+  --color-hint:       #8a978e;
   --color-shadow:     rgba(0,0,0,0.35);
   --color-skel:       #343f44;
   --color-glass:      #313a40;
@@ -547,28 +555,33 @@ html { font-size: calc(var(--xy-text-scale, 1) * 100%); }
 
 /* Graphite — GitHub-Dimmed-family gray: deep gray ground (not black),
    light gray ink. The properly gray theme after two light-gray attempts —
-   contrast comes from the dark ground, grayness from the muted ink. */
+   contrast comes from the dark ground, grayness from the muted ink.
+   Ground is Dimmed's canvas.inset under canvas.overlay cards (+8.5 L*,
+   was +5.6): GitHub separates its boxes with borders, which cards here
+   don't have, so the fill step has to do that job. */
 .theme-graphite {
-  --color-page:       #22272e;
+  --color-page:       #1c2128;
   --color-surface:    #2d333b;
   --color-input:      #373e47;
-  --color-elevated:   #444c56;
+  --color-elevated:   #3d444e;
   --color-hover:      #545d68;
-  --color-inset:      #22272e;
+  --color-inset:      #1c2128;
 
-  --color-heading:    #c5d1de;
-  --color-body:       #adbac7;
-  --color-label:      #909dab;
-  --color-dim:        #768390;
-  --color-faint:      #636e7b;
+  /* heading 8.9, body 6.9, label 5.0, dim 4.1:1 on the card
+     (was 8.2 / 6.5 / 4.6 / 3.3). */
+  --color-heading:    #cdd9e5;
+  --color-body:       #b3c0ce;
+  --color-label:      #96a3b2;
+  --color-dim:        #8694a1;
+  --color-faint:      #6b7683;
   --color-ghost:      #545d68;
 
   --color-divider:    #373e47;
   --color-edge:       #444c56;
   --color-ring-hover: #545d68;
 
-  --color-hint:       #768390;
-  --color-shadow:     rgba(0,0,0,0.35);
+  --color-hint:       #8694a1;
+  --color-shadow:     rgba(0,0,0,0.40);
   --color-skel:       #373e47;
   --color-glass:      #2d333b;
   --color-glass-nav:  #313842;
