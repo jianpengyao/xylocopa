@@ -52,14 +52,14 @@ export const PRESETS = [
     preview: { page: "#dfe5ee", surface: "#f4f6fa", text: "#282e39" },
     core: { page: "#dfe5ee", surface: "#f4f6fa", heading: "#282e39", body: "#3f4759", edge: "#c0cad8", bubble: "#527099" } },
   { id: "dark", name: "Dark", base: "dark",
-    preview: { page: "#030712", surface: "#111827", text: "#f3f4f6" },
-    core: { page: "#030712", surface: "#111827", heading: "#f3f4f6", body: "#d1d5db", edge: "#374151", bubble: "#155e75" } },
+    preview: { page: "#030712", surface: "#172030", text: "#f3f4f6" },
+    core: { page: "#030712", surface: "#172030", heading: "#f3f4f6", body: "#d1d5db", edge: "#374151", bubble: "#155e75" } },
   { id: "graphite", name: "Graphite", base: "dark",
     preview: { page: "#22272e", surface: "#2d333b", text: "#adbac7" },
     core: { page: "#22272e", surface: "#2d333b", heading: "#c5d1de", body: "#adbac7", edge: "#444c56", bubble: "#135b84" } },
   { id: "soft-dark", name: "Soft Dark", base: "dark",
-    preview: { page: "#17181c", surface: "#1e2024", text: "#e8e6e3" },
-    core: { page: "#17181c", surface: "#1e2024", heading: "#e8e6e3", body: "#c9c7c3", edge: "#383b41", bubble: "#375663" } },
+    preview: { page: "#17181c", surface: "#27292e", text: "#e8e6e3" },
+    core: { page: "#17181c", surface: "#27292e", heading: "#e8e6e3", body: "#c9c7c3", edge: "#41444b", bubble: "#375663" } },
   { id: "solarized-dark", name: "Solarized Dark", base: "dark",
     preview: { page: "#002b36", surface: "#073642", text: "#aebcba" },
     core: { page: "#002b36", surface: "#073642", heading: "#aebcba", body: "#90a2a4", edge: "#29525e", bubble: "#135b84" } },
@@ -74,7 +74,7 @@ export const PRESETS = [
 // Seed values for the custom editor, per base (= the default palettes).
 export const CUSTOM_SEEDS = {
   light: { page: "#ffffff", surface: "#f6f7f8", heading: "#222222", body: "#374151", edge: "#d1d5db", bubble: "#0891b2" },
-  dark:  { page: "#030712", surface: "#111827", heading: "#f3f4f6", body: "#d1d5db", edge: "#374151", bubble: "#155e75" },
+  dark:  { page: "#030712", surface: "#172030", heading: "#f3f4f6", body: "#d1d5db", edge: "#374151", bubble: "#155e75" },
 };
 
 export const CUSTOM_COLOR_FIELDS = [
