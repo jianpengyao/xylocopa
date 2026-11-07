@@ -26,6 +26,7 @@ import "@xterm/xterm/css/xterm.css";
 import { AuthError, expireSession, fetchWsTicket, getAuthToken, withTimeout } from "../lib/api";
 import { WS_AUTH_CLOSE_CODE, WS_HANDSHAKE_TIMEOUT_MS, wsSessionEndReason } from "../lib/reconnect";
 import { getTerminalTheme, THEME_EVENT } from "../lib/themes";
+import { designPx } from "../lib/textScale";
 import { useAuth } from "../contexts/AuthContext";
 
 const SESSION_ENDED_MSG = "Session locked — sign in again";
@@ -265,7 +266,8 @@ export default function TerminalOverlay({ agentId, agentName, onClose }) {
     unmountedRef.current = false;
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: window.innerWidth < 640 ? 13 : 14,
+      // Follows Settings > Text size like the rest of the UI.
+      fontSize: Math.round(designPx(window.innerWidth < 640 ? 13 : 14)),
       fontFamily:
         "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
       theme: getTerminalTheme(),

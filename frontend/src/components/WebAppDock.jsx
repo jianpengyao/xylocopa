@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { designPx } from "../lib/textScale";
 
 // Draggable vertical stack of minimized web-app chips. Drag behavior adapted
 // from DraggableFab, but for a container with interactive children: taps fall
@@ -30,7 +31,7 @@ const STORAGE_KEY = "ah:webapp-dock-pos-v1";
 // Default: left edge, above the prompt input bar (matches the old fixed row).
 const defaultRB = (w) => ({
   right: window.innerWidth - 12 - w,
-  bottom: 96,
+  bottom: designPx(96),
 });
 
 export default function WebAppDock({ chips, onRestore, onClose }) {

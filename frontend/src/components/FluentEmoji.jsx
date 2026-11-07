@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { fluentFlatUrl } from "../lib/projectEmoji";
+import { rem } from "../lib/textScale";
 
 /**
  * Render an emoji using Microsoft Fluent UI Emoji (Flat) from jsdelivr CDN,
@@ -13,12 +14,14 @@ export default function FluentEmoji({ char, size = 18, className = "", title }) 
   useEffect(() => { setErrored(false); }, [char]);
 
   if (!char) return null;
+  // `size` is in design px; render it in rem so it follows Settings > Text size.
+  const dim = rem(size);
 
   if (!url || errored) {
     return (
       <span
         className={className}
-        style={{ fontSize: size, lineHeight: 1, display: "inline-block" }}
+        style={{ fontSize: dim, lineHeight: 1, display: "inline-block" }}
         title={title || char}
       >
         {char}
@@ -33,7 +36,7 @@ export default function FluentEmoji({ char, size = 18, className = "", title }) 
       width={size}
       height={size}
       className={className}
-      style={{ display: "inline-block" }}
+      style={{ display: "inline-block", width: dim, height: dim }}
       draggable={false}
       onError={() => setErrored(true)}
       title={title || char}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { designPx } from "../lib/textScale";
 
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const MONTHS = ["January", "February", "March", "April", "May", "June",
@@ -83,8 +84,9 @@ export default function SendLaterPicker({ onSelect, onClose, onClear, title = "R
   useLayoutEffect(() => {
     if (!anchorRef.current) return;
     const rect = anchorRef.current.getBoundingClientRect();
-    const pickerW = 280;
-    const pickerH = 440;
+    // Design px of the w-[280px] picker, scaled like the CSS (Settings > Text size).
+    const pickerW = designPx(280);
+    const pickerH = designPx(440);
     let right = window.innerWidth - rect.right;
     if (rect.right - pickerW < 8) right = window.innerWidth - pickerW - 8;
     if (right < 8) right = 8;

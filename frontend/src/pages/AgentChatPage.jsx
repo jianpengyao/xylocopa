@@ -100,6 +100,7 @@ import ChatSkeleton from "../components/skeletons/ChatSkeleton";
 import { agentBriefCache, processedSuggestionsCache, pendingSuggestionsCache } from "../lib/detailCache";
 import { consumePrefetch } from "../lib/chatPrefetch";
 import { focusTargetId } from "../lib/chatFocus";
+import { designPx } from "../lib/textScale";
 
 const ACTIVE_AGENT_STATUSES = new Set(["EXECUTING", "IDLE"]);
 
@@ -2021,7 +2022,7 @@ function ChatInput({ agentId, project, onSend, onSendLater, disabled, disabledRe
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    el.style.height = Math.min(el.scrollHeight, designPx(160)) + "px";
   }, [text, editText]);
 
   // Entering edit mode (or switching to another message's edit): seed the

@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import FluentEmoji from "./FluentEmoji";
+import { designPx, rem } from "../lib/textScale";
 import { CATEGORIES, KEYWORDS, ALL_EMOJIS } from "../lib/projectEmoji";
 
 const PICKER_W = 296;
@@ -26,16 +27,19 @@ export default function EmojiPicker({ current, onSelect, onClear, onClose, ancho
   useLayoutEffect(() => {
     const rect = anchorRect || anchorRef.current?.getBoundingClientRect();
     if (!rect) return;
+    // Rendered size: the picker is sized in rem (Settings > Text size).
+    const pw = designPx(PICKER_W);
+    const ph = designPx(PICKER_H);
     let right = window.innerWidth - rect.right;
-    if (rect.right - PICKER_W < 8) right = window.innerWidth - PICKER_W - 8;
+    if (rect.right - pw < 8) right = window.innerWidth - pw - 8;
     if (right < 8) right = 8;
     const spaceBelow = window.innerHeight - rect.bottom;
-    if (spaceBelow >= PICKER_H + 8) {
+    if (spaceBelow >= ph + 8) {
       setPos({ top: rect.bottom + 6, right });
-    } else if (rect.top >= PICKER_H + 8) {
+    } else if (rect.top >= ph + 8) {
       setPos({ bottom: window.innerHeight - rect.top + 6, right });
     } else {
-      setPos({ top: Math.max(8, window.innerHeight - PICKER_H - 8), right });
+      setPos({ top: Math.max(8, window.innerHeight - ph - 8), right });
     }
   }, [anchorRect]);
 
@@ -77,7 +81,7 @@ export default function EmojiPicker({ current, onSelect, onClear, onClose, ancho
       ref={pickerRef}
       data-card
       className="bg-surface border border-divider rounded-2xl shadow-xl overflow-hidden z-[9999] flex flex-col"
-      style={{ ...posStyle, width: PICKER_W, maxHeight: PICKER_H }}
+      style={{ ...posStyle, width: rem(PICKER_W), maxHeight: rem(PICKER_H) }}
     >
       {/* Header */}
       <div className="px-4 py-2.5 flex items-center justify-between border-b border-divider shrink-0">

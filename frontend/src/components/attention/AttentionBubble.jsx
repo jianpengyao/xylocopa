@@ -25,6 +25,7 @@ import {
 import JobRow from "./JobRow";
 import { PRESETS, presetSpec, absoluteTime, relativeTime } from "./jobKinds";
 import { loadTranscript, makeMsg, saveTranscript } from "./chatStore";
+import { designPx } from "../../lib/textScale";
 
 /**
  * The assistant's speech bubble — a light popover anchored to the orb,
@@ -439,7 +440,7 @@ export default function AttentionBubble({
   const autoGrow = (e) => {
     const el = e.target;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 92)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, designPx(92))}px`;
   };
 
   const openUrl = useCallback((url) => {

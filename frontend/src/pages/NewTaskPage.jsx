@@ -12,6 +12,7 @@ import useVoiceRecorder from "../hooks/useVoiceRecorder";
 import { useToast } from "../contexts/ToastContext";
 import { attachmentUrl } from "../lib/urls";
 import { draftAttachmentForCache, restoreDraftAttachment } from "../lib/draftAttachments";
+import { designPx } from "../lib/textScale";
 
 function deriveTitle(description) {
   if (!description) return "";
@@ -254,7 +255,7 @@ export default function NewTaskPage({ embedded = false, onClose, contextPath }) 
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    el.style.height = Math.min(el.scrollHeight, designPx(200)) + "px";
   }, [description]);
 
   // Cleanup blob URLs on unmount

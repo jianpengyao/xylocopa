@@ -35,23 +35,24 @@ function ToastItem({ toast, onDismiss }) {
         background: "rgba(255,255,255,0.95)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
-        borderRadius: 14,
-        padding: "10px 14px",
-        maxWidth: 300,
+        // rem, not px: follows Settings > Text size.
+        borderRadius: "0.875rem",
+        padding: "0.625rem 0.875rem",
+        maxWidth: "18.75rem",
         boxShadow: "0 2px 16px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06)",
         display: "flex",
         alignItems: "center",
-        gap: 8,
+        gap: "0.5rem",
       }}
     >
       <svg
         width="18" height="18" viewBox="0 0 24 24"
         fill="none" stroke={iconColor} strokeWidth={2.5}
-        style={{ flexShrink: 0 }}
+        style={{ flexShrink: 0, width: "1.125rem", height: "1.125rem" }}
       >
         {ICON_PATHS[toast.type] || ICON_PATHS.info}
       </svg>
-      <span style={{ color: "#1c1c1e", fontSize: 13, fontWeight: 500, lineHeight: 1.3, flex: 1 }}>
+      <span style={{ color: "#1c1c1e", fontSize: "0.8125rem", fontWeight: 500, lineHeight: 1.3, flex: 1 }}>
         {toast.message}
       </span>
     </div>

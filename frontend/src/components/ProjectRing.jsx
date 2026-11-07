@@ -1,5 +1,6 @@
 import FluentEmoji from "./FluentEmoji";
 import { resolveProjectEmoji } from "../lib/projectEmoji";
+import { rem } from "../lib/textScale";
 
 /**
  * Project identity icon.
@@ -19,7 +20,7 @@ export default function ProjectRing({
   return (
     <span
       className={`inline-flex items-center justify-center shrink-0 ${className}`}
-      style={{ width: size, height: size }}
+      style={{ width: rem(size), height: rem(size) }}
     >
       <FluentEmoji char={displayEmoji} size={size} />
     </span>
