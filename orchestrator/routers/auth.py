@@ -123,11 +123,17 @@ def _login_payload(db: Session, token: str, row) -> dict:
     }
 
 
-def _new_session(db: Session, request: Request, device_label=None):
+def _device_id(request: Request) -> str | None:
+    """The client's device id (X-Device-Id, see lib/api.js deviceId())."""
+    return auth_store.clean_device_id(request.headers.get("x-device-id"))
+
+
+def _new_session(db: Session, request: Request, device_label=None, device_id=None):
     return auth_store.create_session(
         db,
         user_agent=request.headers.get("user-agent"),
         device_label=device_label,
+        device_id=device_id or _device_id(request),
         ip=_client_ip(request),
     )
 
@@ -247,8 +253,10 @@ async def auth_login(request: Request, db: Session = Depends(get_db)):
 
     Lockouts apply only to the failing client's IP (never loopback), so a
     guesser elsewhere can't lock the owner out; a locked IP gets 429 before
-    bcrypt runs. A Bearer of the previous (e.g. idle-locked) token is revoked
-    as "replaced" on success."""
+    bcrypt runs. On success the sessions this login supersedes are revoked as
+    "replaced": the presented Bearer (e.g. an idle-locked token), any other
+    live session of the same device (X-Device-Id), and idle ones with the
+    same label from the same IP (auth_store.retire_superseded)."""
     ip = _client_ip(request)
     limited = not is_loopback(ip)
     reset_at = auth_store.get_limiter_reset_at(db)
@@ -294,10 +302,10 @@ async def auth_login(request: Request, db: Session = Depends(get_db)):
         store_password_hash(db, await hash_password_async(password))
         logger.info("Migrated password hash from SHA-256 to bcrypt")
 
-    previous = _bearer(request)
     token, row = _new_session(db, request, body.get("device_label"))
-    if previous and auth_store.revoke_token(db, previous, "replaced"):
-        logger.info("LOGIN_REPLACED ip=%s session=%s", ip, row.id)
+    replaced = auth_store.retire_superseded(db, row, previous_token=_bearer(request))
+    if replaced:
+        logger.info("LOGIN_REPLACED ip=%s session=%s replaced=%d", ip, row.id, replaced)
     logger.info("LOGIN_OK ip=%s session=%s", ip, row.id)
     return _nostore(_login_payload(db, token, row))
 
@@ -363,23 +371,51 @@ async def auth_change_password(request: Request, db: Session = Depends(get_db)):
         change_password_limiter.record_success(key)
     new_hash = await hash_password_async(new_pw)
     store_password_hash(db, new_hash)
-    revoked = auth_store.revoke_all(db, reason="password-change")
-    auth_store.bump_not_before(db)
 
     label = body.get("device_label")
-    if not label and ctx is not None and ctx.kind == "session":
-        label = ctx.device_label
-    token, row = _new_session(db, request, label)
+    device_id = _device_id(request)
+    if ctx is not None and ctx.kind == "session":
+        label = label or ctx.device_label
+        device_id = device_id or auth_store.session_device_ids(
+            db, [ctx.session_id]).get(ctx.session_id)
+    # The new session first, then everything else: this device stays signed
+    # in and keeps its push subscription; the others lose theirs.
+    token, row = _new_session(db, request, label, device_id)
+    revoked = auth_store.revoke_all(db, except_id=row.id, reason="password-change")
+    auth_store.bump_not_before(db)
     logger.info("Password changed (revoked %d sessions, new session=%s)", revoked, row.id)
     return _nostore({**_login_payload(db, token, row), "revoked_sessions": revoked})
 
 
+def _with_notifications(db: Session, sessions: list[dict]) -> list[dict]:
+    """Add each device's push state: "on", "muted" (agent messages switched
+    off on that device), "off" (no push subscription) or None (the session
+    has no device id: an older client, or signed in before device ids)."""
+    from models import PushSubscription
+
+    device_of = auth_store.session_device_ids(db, [s["id"] for s in sessions])
+    state: dict[str, str] = {}
+    if device_of:
+        subs = db.query(PushSubscription.device_id, PushSubscription.agents_enabled).filter(
+            PushSubscription.device_id.in_(set(device_of.values()))).all()
+        for device_id, agents_enabled in subs:
+            if agents_enabled or state.get(device_id) == "on":
+                state[device_id] = "on"
+            else:
+                state[device_id] = "muted"
+    for s in sessions:
+        device_id = device_of.get(s["id"])
+        s["notifications"] = state.get(device_id, "off") if device_id else None
+    return sessions
+
+
 @router.get("/sessions")
 async def auth_sessions(request: Request, db: Session = Depends(get_db)):
-    """Signed-in devices: live (not revoked, not expired) sessions."""
+    """Signed-in devices: live (not revoked, not expired) sessions, each with
+    its notification state."""
     current_id = _current_session_id(request, db)
     return _nostore({
-        "sessions": auth_store.list_sessions(db, current_id),
+        "sessions": _with_notifications(db, auth_store.list_sessions(db, current_id)),
         "current_id": current_id,
         "auth_disabled": auth_disabled(),
     })
@@ -567,10 +603,10 @@ async def auth_protection(request: Request, db: Session = Depends(get_db)):
                 return _error(503, "Auth store unavailable")
         logger.info("Initial password set via the protection switch")
 
-    previous = _bearer(request)
     token, row = _new_session(db, request, body.get("device_label"))
-    if previous and auth_store.revoke_token(db, previous, "replaced"):
-        logger.info("LOGIN_REPLACED ip=%s session=%s", ip, row.id)
+    replaced = auth_store.retire_superseded(db, row, previous_token=_bearer(request))
+    if replaced:
+        logger.info("LOGIN_REPLACED ip=%s session=%s replaced=%d", ip, row.id, replaced)
     logger.info("AUTH_PROTECTION on ip=%s session=%s", ip, row.id)
     ws_auth.schedule_close_open_sockets()
     return _nostore({**_login_payload(db, token, row), "settings": _auth_settings(db),

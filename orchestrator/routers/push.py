@@ -12,8 +12,11 @@ logger = logging.getLogger("orchestrator")
 
 router = APIRouter(prefix="/api/push", tags=["push"])
 
-# Subscriptions are deleted only when the push service answers 404/410
-# (push._send_one).  There is no age/ack-based prune: a muted device gets
+# Subscriptions are deleted when the push service answers 404/410
+# (push._send_one), when their device registers a newer endpoint (/subscribe,
+# same device_id), when that device is signed out (auth_store), or when the
+# device has gone silent for weeks while pushes kept going out
+# (push.prune_dead_subscriptions).  Never for age alone: a muted device gets
 # no pushes, so it never acks, and must not be dropped for that.
 
 
@@ -95,7 +98,14 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
     Returns this device's settings so the client's bell reflects the
     server, not localStorage, and ``created`` (the server did not know
     this endpoint).
+
+    The X-Device-Id header (the client's id, as sent at login) ties the row
+    to the device: older endpoints of the same device are dropped (a browser holds
+    one subscription per app, so they can no longer deliver), the devices
+    list can show this device's state, and signing the device out deletes
+    the row. A caller session without a device id adopts it.
     """
+    import auth_store
     from models import PushSubscription
 
     body = await request.json()
@@ -108,6 +118,7 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Missing endpoint or keys")
 
     label = label_from_user_agent(request.headers.get("user-agent", ""))
+    device_id = auth_store.clean_device_id(request.headers.get("x-device-id"))
     existing = db.query(PushSubscription).filter(
         PushSubscription.endpoint == endpoint
     ).first()
@@ -117,6 +128,8 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
         existing.last_seen_at = _utcnow()
         if label:
             existing.device_label = label
+        if device_id:
+            existing.device_id = device_id
         sub = existing
         logger.info("push/subscribe: updated existing subscription sub=%s (endpoint=%s…)",
                     sub.id, endpoint[:60])
@@ -130,12 +143,24 @@ async def push_subscribe(request: Request, db: Session = Depends(get_db)):
             **seed,
             device_label=label,
             last_seen_at=_utcnow(),
+            device_id=device_id,
         )
         db.add(sub)
         logger.info("push/subscribe: registered new subscription (%s, agents=%s tasks=%s, "
                     "endpoint=%s…)", label, seed["agents_enabled"], seed["tasks_enabled"],
                     endpoint[:60])
+    if device_id:
+        stale = db.query(PushSubscription).filter(
+            PushSubscription.device_id == device_id,
+            PushSubscription.endpoint != endpoint,
+        ).delete(synchronize_session=False)
+        if stale:
+            logger.info("push/subscribe: dropped %d older endpoint(s) of device %s…",
+                        stale, device_id[:8])
     db.commit()
+    ctx = getattr(request.state, "auth", None)
+    if device_id and ctx is not None and getattr(ctx, "kind", None) == "session":
+        auth_store.adopt_device_id(db, ctx.session_id, device_id)
     total = db.query(PushSubscription).count()
     logger.info("push/subscribe: total active subscriptions = %d", total)
     return {"status": "subscribed", "created": existing is None,

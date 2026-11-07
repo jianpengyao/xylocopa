@@ -858,6 +858,15 @@ def init_db():
                 "INTEGER NOT NULL DEFAULT 0"
             ))
             conn.commit()
+        if "device_id" not in push_cols:
+            conn.execute(text(
+                "ALTER TABLE push_subscriptions ADD COLUMN device_id VARCHAR(64)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_push_subscriptions_device_id "
+                "ON push_subscriptions (device_id)"
+            ))
+            conn.commit()
 
         # --- Add 5m / 1h cache_creation split columns to cc_sessions ---
         # Anthropic charges 1h ephemeral cache writes at 2× input vs 1.25×

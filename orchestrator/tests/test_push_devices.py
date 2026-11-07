@@ -410,9 +410,15 @@ def test_nothing_else_deletes_push_subscriptions():
     """Structural guard for the removed 14-day zombie prune (startup and
     /subscribe): a muted device gets no pushes, so it never acks, and must
     never be pruned for that.  The only code allowed to delete a
-    push_subscriptions row is the 404/410 handler and /unsubscribe; a new
-    deleter (e.g. startup housekeeping in main.lifespan, which ASGI tests
-    never run) must be added here deliberately."""
+    push_subscriptions row:
+      - push._send_one: the push service answered 404/410;
+      - routers.push.push_unsubscribe: the device asked;
+      - routers.push.push_subscribe: older endpoints of the same device_id;
+      - auth_store._forget_device_push: that device was signed out;
+      - push.prune_dead_subscriptions: many unacked sends AND no ack or
+        re-registration for weeks (never age alone).
+    A new deleter (e.g. startup housekeeping in main.lifespan, which ASGI
+    tests never run) must be added here deliberately."""
     import ast
     import pathlib
     import re
@@ -434,4 +440,10 @@ def test_nothing_else_deletes_push_subscriptions():
             if ("PushSubscription" in seg and ".delete(" in seg) or \
                     re.search(r"DELETE\s+FROM\s+push_subscriptions", seg, re.I):
                 deleters.add(f"{module}.{node.name}")
-    assert deleters == {"push._send_one", "routers.push.push_unsubscribe"}
+    assert deleters == {
+        "push._send_one",
+        "routers.push.push_unsubscribe",
+        "routers.push.push_subscribe",
+        "auth_store._forget_device_push",
+        "push.prune_dead_subscriptions",
+    }

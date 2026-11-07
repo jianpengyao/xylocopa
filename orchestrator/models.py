@@ -387,8 +387,13 @@ class PushSubscription(Base):
     tasks_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     device_label: Mapped[str | None] = mapped_column(String(60), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Diagnostic only: sends since the last SW ack. Never used to delete.
+    # Sends since the last SW ack. push.prune_dead_subscriptions deletes a
+    # row only when this is high AND the device has neither acked nor
+    # re-registered for weeks (a muted device gets no sends, so stays 0).
     unacked_sends: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The client's device id (auth_sessions.device_id): one subscription per
+    # device, and signing the device out deletes it.
+    device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class ProgressInsight(Base):

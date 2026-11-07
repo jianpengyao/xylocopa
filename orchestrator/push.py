@@ -8,7 +8,7 @@ import json
 import logging
 import secrets
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests as _requests
 
@@ -38,6 +38,45 @@ CHANNEL_DEVICE_FLAG = {
     "message": "agents_enabled",
     "task_complete": "tasks_enabled",
 }
+
+
+# A subscription counts as dead once at least DEAD_MIN_UNACKED pushes were
+# accepted for it since its last ack AND for DEAD_AFTER_DAYS the device has
+# neither acked a push nor re-registered (the app re-registers on every
+# foreground while signed in). The push service still accepting the sends
+# (no 404/410) is exactly the case this catches: an old or wiped device.
+DEAD_AFTER_DAYS = 14
+DEAD_MIN_UNACKED = 20
+
+
+def prune_dead_subscriptions(db, now: datetime | None = None) -> int:
+    """Delete dead subscriptions (see DEAD_AFTER_DAYS). Returns the count.
+
+    Never deletes for age alone: a muted device gets no sends, so its
+    counter stays 0, and a device in use keeps re-registering.
+    """
+    from sqlalchemy import func
+
+    from models import PushSubscription
+
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(days=DEAD_AFTER_DAYS)
+    dead = db.query(PushSubscription).filter(
+        PushSubscription.unacked_sends >= DEAD_MIN_UNACKED,
+        func.coalesce(PushSubscription.last_ack_at, PushSubscription.created_at) < cutoff,
+        func.coalesce(PushSubscription.last_seen_at, PushSubscription.created_at) < cutoff,
+    ).all()
+    if not dead:
+        return 0
+    for sub in dead:
+        logger.info("Removed dead push subscription id=%s (%s): %d sends unacked, "
+                    "last ack %s, last registered %s", sub.id, sub.device_label,
+                    sub.unacked_sends, sub.last_ack_at, sub.last_seen_at)
+    db.query(PushSubscription).filter(
+        PushSubscription.id.in_([sub.id for sub in dead])
+    ).delete(synchronize_session=False)
+    db.commit()
+    return len(dead)
 
 
 def send_push_notification(title: str, body: str, url: str = "/",
@@ -183,6 +222,11 @@ def _send_webpush(title: str, body: str, url: str = "/",
     flag = CHANNEL_DEVICE_FLAG.get(channel or "")
     db = SessionLocal()
     try:
+        try:
+            prune_dead_subscriptions(db)
+        except Exception:
+            db.rollback()
+            logger.warning("dead push subscription prune failed", exc_info=True)
         subs = db.query(PushSubscription).all()
         if not subs:
             return 0

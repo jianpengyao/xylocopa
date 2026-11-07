@@ -12,6 +12,13 @@ time and idle-locked by the server:
   throttled (ACTIVITY_WRITE_S / SEEN_WRITE_S per session); reads are always
   fresh, so a revoke from the reset CLI or another process applies at once.
 
+Device ids: the client keeps a random id per browser storage (localStorage,
+kept across logout and expiry) and sends it as X-Device-Id. A login
+retires the live sessions of the same device (retire_superseded), and
+push_subscriptions carry the same id, so signing a device out also stops
+its notifications (_forget_device_push). An idle (locked) session keeps
+its pushes; only revoked devices lose them.
+
 Legacy session JWTs (unscoped create_token output, before this module) are
 accepted only inside a sunset window anchored on auth_sessions_epoch, the
 first boot of this code. Media tokens are scope=media JWTs bound to a
@@ -25,6 +32,7 @@ SessionLocal and the reset CLI all work without init_db.
 import dataclasses
 import hashlib
 import logging
+import re
 import secrets
 import threading
 import time
@@ -32,7 +40,7 @@ import unicodedata
 import weakref
 from collections import OrderedDict
 
-from sqlalchemy import REAL, Index, Text, select, update
+from sqlalchemy import REAL, Index, Text, select, text, update
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -51,6 +59,7 @@ _LEGACY_MAX_LIFETIME_S = 86400 + 60
 # Revoked / expired rows are kept this long for the record, then purged.
 _PURGE_AFTER_S = 30 * 86400
 _DEVICE_LABEL_MAX = 80
+_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")
 _USER_AGENT_MAX = 300
 _THROTTLE_MAX = 2048
 _WS_TICKETS_MAX = 1000
@@ -77,6 +86,9 @@ class AuthSession(AuthBase):
     expires_at: Mapped[float] = mapped_column(REAL, nullable=False)
     revoked_at: Mapped[float | None] = mapped_column(REAL, nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Client-generated id of the browser storage that logged in (None: an
+    # older client, or a session from before device ids).
+    device_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_auth_sessions_live", "revoked_at", "expires_at"),)
 
@@ -130,6 +142,16 @@ def ensure_auth_schema(bind) -> None:
                 SystemConfig.__table__.insert().prefix_with("OR IGNORE"),
                 {"key": "auth_sessions_epoch", "value": repr(time.time())},
             )
+            # Columns added after the table first shipped (create_all never
+            # alters an existing table).
+            cols = {r[1] for r in conn.execute(text("PRAGMA table_info(auth_sessions)"))}
+            if "device_id" not in cols:
+                try:
+                    conn.execute(text("ALTER TABLE auth_sessions ADD COLUMN device_id TEXT"))
+                except OperationalError as e:
+                    # Another process added it between the check and ALTER.
+                    if "duplicate column" not in str(e):
+                        raise
         _ensured_engines.add(engine)
 
 
@@ -158,6 +180,13 @@ def clean_device_label(label) -> str | None:
         return None
     text = "".join(c for c in label if not unicodedata.category(c).startswith("C")).strip()
     return text[:_DEVICE_LABEL_MAX] or None
+
+
+def clean_device_id(value) -> str | None:
+    """Client-sent device id: 8-64 chars of [A-Za-z0-9_-], or None."""
+    if isinstance(value, str) and _DEVICE_ID_RE.fullmatch(value):
+        return value
+    return None
 
 
 def derive_device_label(ua: str | None) -> str:
@@ -363,7 +392,7 @@ def purge_stale(db, now: float | None = None) -> int:
 
 
 def create_session(db, *, user_agent: str | None = None, device_label=None,
-                   ip: str | None = None, now: float | None = None):
+                   device_id=None, ip: str | None = None, now: float | None = None):
     """Issue a new session. Returns (token, row); only the hash is stored."""
     _ready(db)
     now = time.time() if now is None else now
@@ -380,6 +409,7 @@ def create_session(db, *, user_agent: str | None = None, device_label=None,
         last_seen_at=now,
         last_active_at=now,
         expires_at=now + config.AUTH_SESSION_MAX_DAYS * 86400,
+        device_id=clean_device_id(device_id),
     )
     try:
         purge_stale(db, now)
@@ -499,15 +529,23 @@ def get_session(db, session_id: str):
     return _get_row(db, session_id)
 
 
-def revoke_session(db, session_id: str, reason: str, now: float | None = None) -> bool:
+def revoke_session(db, session_id: str, reason: str, now: float | None = None,
+                   *, forget_push: bool = True) -> bool:
     """Revoke one live (not yet revoked) session. Final: an unlock is a new
-    login. Returns False when unknown or already revoked."""
+    login. Returns False when unknown or already revoked. Unless forget_push
+    is False, a device left with no live session loses its push
+    subscriptions (_forget_device_push)."""
     now = time.time() if now is None else now
     _ready(db)
+    device_id = db.execute(
+        select(AuthSession.device_id).where(AuthSession.id == session_id)
+    ).scalar_one_or_none()
     res = db.execute(
         update(AuthSession)
         .where(AuthSession.id == session_id, AuthSession.revoked_at.is_(None))
         .values(revoked_at=now, revoked_reason=reason))
+    if res.rowcount and forget_push:
+        _forget_device_push(db, [device_id], now)
     db.commit()
     _forget_session(session_id)
     return bool(res.rowcount)
@@ -521,14 +559,17 @@ def revoke_token(db, token: str | None, reason: str, now: float | None = None) -
 
 def revoke_all(db, *, except_id: str | None = None, reason: str,
                now: float | None = None, commit: bool = True) -> int:
-    """Revoke every unexpired live session (optionally sparing one)."""
+    """Revoke every unexpired live session (optionally sparing one). The
+    signed-out devices lose their push subscriptions; the spared session's
+    device keeps them."""
     now = time.time() if now is None else now
     _ready(db)
-    q = update(AuthSession).where(
-        AuthSession.revoked_at.is_(None), AuthSession.expires_at > now)
+    cond = [AuthSession.revoked_at.is_(None), AuthSession.expires_at > now]
     if except_id:
-        q = q.where(AuthSession.id != except_id)
-    res = db.execute(q.values(revoked_at=now, revoked_reason=reason))
+        cond.append(AuthSession.id != except_id)
+    device_ids = db.execute(select(AuthSession.device_id).where(*cond)).scalars().all()
+    res = db.execute(update(AuthSession).where(*cond).values(revoked_at=now, revoked_reason=reason))
+    _forget_device_push(db, device_ids, now)
     if commit:
         db.commit()
     with _state_lock:
@@ -536,6 +577,109 @@ def revoke_all(db, *, except_id: str | None = None, reason: str,
             for sid in [sid for sid in d if sid != except_id]:
                 del d[sid]
     return res.rowcount or 0
+
+
+def retire_superseded(db, row, *, previous_token: str | None = None,
+                      now: float | None = None) -> int:
+    """After a login issued `row`, revoke ("replaced") what it supersedes:
+
+    - the session whose token the client presented (an idle-locked one);
+    - every other live session with the same device id — the client lost
+      its token (cleared on a 401, signed out) but kept its storage;
+    - idle sessions with the same label from the same IP: the same device
+      whose storage was wiped (home-screen icon re-added), so its old
+      session can never unlock again. A heuristic, so these keep their
+      push subscriptions; dead ones go when the push service drops them.
+
+    Returns how many sessions were revoked.
+    """
+    now = time.time() if now is None else now
+    _ready(db)
+    exact: set[str] = set()
+    if previous_token and previous_token.startswith(SESSION_TOKEN_PREFIX):
+        sid = db.execute(select(AuthSession.id).where(
+            AuthSession.token_hash == hash_token(previous_token))).scalar_one_or_none()
+        if sid and sid != row.id:
+            exact.add(sid)
+    likely: set[str] = set()
+    live = db.execute(
+        select(AuthSession)
+        .where(AuthSession.revoked_at.is_(None), AuthSession.expires_at > now,
+               AuthSession.id != row.id)
+        .execution_options(populate_existing=True)
+    ).scalars().all()
+    for other in live:
+        if row.device_id and other.device_id == row.device_id:
+            exact.add(other.id)
+        elif (row.last_ip and other.last_ip == row.last_ip
+              and other.device_label == row.device_label
+              and _row_state(db, other, now) == "idle"):
+            likely.add(other.id)
+    revoked = 0
+    for sid in exact:
+        revoked += revoke_session(db, sid, "replaced", now=now)
+    for sid in likely - exact:
+        revoked += revoke_session(db, sid, "replaced", now=now, forget_push=False)
+    return revoked
+
+
+def adopt_device_id(db, session_id: str | None, device_id) -> bool:
+    """Record the device id of a session that has none yet (a session from
+    before device ids, seen again on a push re-registration)."""
+    device_id = clean_device_id(device_id)
+    if not session_id or not device_id:
+        return False
+    _ready(db)
+    res = db.execute(
+        update(AuthSession)
+        .where(AuthSession.id == session_id, AuthSession.device_id.is_(None))
+        .values(device_id=device_id))
+    db.commit()
+    return bool(res.rowcount)
+
+
+def session_device_ids(db, session_ids) -> dict[str, str]:
+    """{session id: device id} for the given sessions that have one."""
+    ids = [i for i in session_ids if i]
+    if not ids:
+        return {}
+    _ready(db)
+    rows = db.execute(select(AuthSession.id, AuthSession.device_id).where(
+        AuthSession.id.in_(ids), AuthSession.device_id.is_not(None))).all()
+    return {sid: did for sid, did in rows}
+
+
+def _forget_device_push(db, device_ids, now: float) -> int:
+    """Delete the push subscriptions of devices left with no live session.
+
+    Runs after a revoke, in the caller's transaction. A device that still
+    has a live session — the new one after a re-login, the caller's own
+    after "sign out other devices" — keeps its pushes, and so does an idle
+    (locked) one, which is never revoked by locking. Raw SQL: the table
+    belongs to the main schema, which a bare auth DB may lack.
+    """
+    ids = {d for d in device_ids if d}
+    if not ids:
+        return 0
+    still_live = set(db.execute(
+        select(AuthSession.device_id).where(
+            AuthSession.device_id.in_(ids), AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > now)
+    ).scalars())
+    gone = sorted(ids - still_live)
+    if not gone:
+        return 0
+    cols = {r[1] for r in db.execute(text("PRAGMA table_info(push_subscriptions)"))}
+    if "device_id" not in cols:
+        return 0
+    params = {f"d{i}": d for i, d in enumerate(gone)}
+    marks = ", ".join(f":d{i}" for i in range(len(gone)))
+    res = db.execute(text(f"DELETE FROM push_subscriptions WHERE device_id IN ({marks})"), params)
+    removed = res.rowcount or 0
+    if removed:
+        logger.info("push: removed %d subscription(s) of %d signed-out device(s)",
+                    removed, len(gone))
+    return removed
 
 
 def idle_remaining(db, target, now: float | None = None) -> int | None:
