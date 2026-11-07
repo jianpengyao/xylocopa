@@ -43,7 +43,7 @@ Every agent runs in a tmux session you can attach to from a terminal, and CLI se
 | **Web terminal & CLI sync** | An in-chat terminal attaches to the agent's live tmux session from any browser, phone included; CLI sessions appear in the web app and web sessions resume from a terminal (`tmux attach -t xy-<id>`). Sync is two-way. |
 | **Mobile PWA & themes** | Home Screen install on iOS/Android with push and voice; five preset palettes (Nord, Solarized, Everforest, …) plus a custom theme editor; a per-device text size setting that scales the whole UI; e-ink display mode for e-paper readers. |
 | **Git** | Per-project diffs, commit history, branch status; agents work in isolated worktrees; one-click cleanup and push. |
-| <a id="safety-guardrails"></a>**Security & safety** | Password auth with rate limiting, inactivity lock, HTTPS; a deterministic `PreToolUse` hook hard-blocks destructive operations (`rm -rf`, force-pushes, `git reset --hard`, `DROP TABLE`, writes outside the project) even under `--dangerously-skip-permissions`. |
+| <a id="safety-guardrails"></a>**Security & safety** | Password auth with rate limiting, inactivity lock, per-device sign-out that also stops that device's notifications, HTTPS; a deterministic `PreToolUse` hook hard-blocks destructive operations (`rm -rf`, force-pushes, `git reset --hard`, `DROP TABLE`, writes outside the project) even under `--dangerously-skip-permissions`. |
 | **Reliability** | Survives restarts and kills, with an incremental [session cache](orchestrator/session_cache.py), tmux-anchored agent recovery, scheduled [backups](orchestrator/backup.py), [orphan cleanup](orchestrator/orphan_cleanup.py), and unlimited session retention. |
 
 ## Getting Started
