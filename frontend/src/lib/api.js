@@ -17,6 +17,34 @@ export const MEDIA_TOKEN_KEY = "cc-media-token";
 // server's idle timeout. The token is kept: logging in with it as Bearer
 // retires the locked session instead of leaving it in the device list.
 export const AUTH_LOCKED_KEY = "cc-auth-locked";
+// A random id for this browser storage (one per installed app / browser
+// profile), sent as X-Device-Id with every API request. Unlike the token it
+// survives logout and session expiry, so a login retires this device's
+// earlier sessions and push registrations stay tied to the device
+// (orchestrator/auth_store.py). Wiped storage means a new id.
+const DEVICE_ID_KEY = "xy:device-id";
+const DEVICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+let _deviceId = null;
+
+export function deviceId() {
+  if (_deviceId) return _deviceId;
+  try {
+    const stored = localStorage.getItem(DEVICE_ID_KEY);
+    if (stored && DEVICE_ID_RE.test(stored)) return (_deviceId = stored);
+  } catch { /* storage blocked: an id for this page only */ }
+  _deviceId = _newDeviceId();
+  try { localStorage.setItem(DEVICE_ID_KEY, _deviceId); } catch { /* this page only */ }
+  return _deviceId;
+}
+
+function _newDeviceId() {
+  try {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  } catch { /* insecure context */ }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 // Timestamp of the most recent setAuthSession() call — used to protect the
 // fresh token from being nuked by stale callbacks during the first few seconds
@@ -189,7 +217,7 @@ function _sendAuthDiag(action, reason, sinceLoginMs) {
  * Use this when you need to inspect status codes or handle non-JSON responses.
  */
 export async function authedFetch(url, opts = {}) {
-  const headers = { ...opts.headers };
+  const headers = { ...opts.headers, "X-Device-Id": deviceId() };
   const token = getAuthToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -345,7 +373,7 @@ function _logTiming(method, url, status, durMs) {
 // gesture (lib/activity.js), so background polls never keep a session alive.
 async function request(url, opts = {}) {
   const { activity, ...fetchOpts } = opts;
-  const headers = { "Content-Type": "application/json", ...fetchOpts.headers };
+  const headers = { "Content-Type": "application/json", ...fetchOpts.headers, "X-Device-Id": deviceId() };
   const token = getAuthToken();
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -440,7 +468,7 @@ function _withDeviceLabel(body, label) {
  * with setAuthSession(). Errors carry the server `detail` and `.status`.
  */
 export const authLogin = async (password, { deviceLabel: label } = {}) => {
-  const headers = { "Content-Type": "application/json" };
+  const headers = { "Content-Type": "application/json", "X-Device-Id": deviceId() };
   const prev = getAuthToken();
   if (prev) headers["Authorization"] = `Bearer ${prev}`;
   const res = await fetch("/api/auth/login", {

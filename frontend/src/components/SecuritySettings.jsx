@@ -27,6 +27,37 @@ const DEFAULT_IDLE_CHOICES = [0, 5, 15, 30, 60, 120, 240, 480, 1440];
 const MIN_PASSWORD_LENGTH = 8; // same as the server
 const THUMBNAIL_CACHE = "thumbnail-cache"; // sw-runtime-caching.js
 
+// Each device's push state, from GET /api/auth/sessions: "on", "muted"
+// (agent messages switched off with that device's bell), "off" (no push
+// subscription) or null (signed in before device ids: unknown, no chip).
+const NOTIFICATION_CHIPS = {
+  on: {
+    label: "Notifications on",
+    cls: "ok-tint-15 text-ok",
+    title: "This device gets push notifications.",
+  },
+  muted: {
+    label: "Notifications muted",
+    cls: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    title: "Agent replies, finished tasks and questions are muted on this device. Unmute with the bell on its Agents page.",
+  },
+  off: {
+    label: "Notifications off",
+    cls: "bg-elevated text-dim",
+    title: "This device has no push subscription. Turn it on with the bell on its Agents page.",
+  },
+};
+
+function NotificationChip({ state }) {
+  const chip = NOTIFICATION_CHIPS[state];
+  if (!chip) return null;
+  return (
+    <span title={chip.title} className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${chip.cls}`}>
+      {chip.label}
+    </span>
+  );
+}
+
 function idleLabel(minutes, defaultMinutes) {
   let label;
   if (minutes === 0) label = "Off";
@@ -488,6 +519,10 @@ export default function SecuritySettings() {
         {/* Signed-in devices */}
         <div className="rounded-xl bg-surface shadow-card p-4">
           <h3 className="text-sm font-medium text-heading">Signed-in devices</h3>
+          <p className="text-xs text-dim mt-1 leading-relaxed">
+            A locked device keeps its notifications. Revoking or signing out a
+            device stops them; they come back when it signs in again.
+          </p>
           {sessions === null && !sessionsError && <p className="text-xs text-faint mt-2">Loading...</p>}
           {sessions !== null && sessions.length === 0 && (
             <p className="text-xs text-dim mt-2">No signed-in devices.</p>
@@ -505,6 +540,7 @@ export default function SecuritySettings() {
                       {s.state === "idle" && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400">Locked</span>
                       )}
+                      <NotificationChip state={s.notifications} />
                     </div>
                     <p className="text-[11px] text-dim mt-0.5 truncate">
                       Last seen {ago(s.last_seen_at)}
