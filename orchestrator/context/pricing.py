@@ -12,8 +12,9 @@ JSONL `usage.cache_creation` exposes the split:
   ephemeral_5m_input_tokens, ephemeral_1h_input_tokens
 
 Cache read price is 0.10× input regardless of which TTL was used to write,
-with two exceptions that carry their own rate: Fable 5.1 reads at
-$0.25/MTok (0.025×) and Opus 5.5 at $0.20/MTok (0.05×).
+with three exceptions that carry their own rate: Fable 5.2 reads at
+$0.20/MTok (0.025×), Fable 5.1 at $0.25/MTok (0.025×) and Opus 5.5 at
+$0.20/MTok (0.05×).
 """
 from __future__ import annotations
 
@@ -22,7 +23,11 @@ from __future__ import annotations
 # Pricing — USD per 1M tokens.
 # ---------------------------------------------------------------------------
 PRICING: dict[str, dict[str, float]] = {
-    # --- Fable 5.1 / 5 ($10/$50 — flagship) ---
+    # --- Fable 5.2 ($8/$40 — current flagship, cache read $0.20) ---
+    # Must stay an explicit entry: resolve_pricing's suffix-strip fallback
+    # would hand it Fable 5's $10/$50 rates and a 5x cache_read.
+    "claude-fable-5-2":  {"input": 8.00,  "cache_create_5m": 10.00, "cache_create_1h": 16.00, "cache_read": 0.20, "output": 40.00},
+    # --- Fable 5.1 / 5 ($10/$50 — earlier flagships) ---
     # 5.1 must stay an explicit entry: resolve_pricing's suffix-strip fallback
     # would hand it Fable 5's $1.00 cache_read, but 5.1 reads at $0.25/MTok.
     "claude-fable-5-1":  {"input": 10.00, "cache_create_5m": 12.50, "cache_create_1h": 20.00, "cache_read": 0.25, "output": 50.00},

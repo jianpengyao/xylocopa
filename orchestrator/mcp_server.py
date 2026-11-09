@@ -516,10 +516,14 @@ def task_create(
                                        1M context, cheaper than Opus 5
                                        ($4/$20 vs $5/$25), go-to for
                                        complex agentic coding
-        - claude-fable-5              → most capable; flagship for the
-                                       hardest tasks (~2x cost of Opus)
-        - claude-fable-5-1            → newest flagship point release;
+        - claude-fable-5              → earlier flagship (~2.5x cost of
+                                       Opus 5.5)
+        - claude-fable-5-1            → previous flagship point release;
                                        same price tier as Fable 5
+        - claude-fable-5-2            → latest flagship and most capable,
+                                       for the hardest tasks; cheaper than
+                                       Fable 5.1 ($8/$40 vs $10/$50),
+                                       ~2x cost of Opus 5.5
 
       effort:
         - low      → < 1 hour, well-scoped (~30 lines or contained tweak)
@@ -642,7 +646,7 @@ def task_update(
         model: New Claude model id (claude-haiku-4-5-20251001 |
             claude-sonnet-5 | claude-opus-4-6 | claude-opus-4-7 |
             claude-opus-4-8 | claude-opus-5 | claude-opus-5-5 |
-            claude-fable-5 | claude-fable-5-1).
+            claude-fable-5 | claude-fable-5-1 | claude-fable-5-2).
             Empty = leave unchanged.
         effort: New effort level (low|medium|high|xhigh|max|ultracode).
             Empty = leave unchanged.

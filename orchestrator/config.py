@@ -72,6 +72,7 @@ ATTENTION_CHARGEN_MODEL = os.getenv("ATTENTION_CHARGEN_MODEL", "claude-opus-5")
 
 # Valid model names — keep in sync with frontend MODEL_OPTIONS
 VALID_MODELS = {
+    "claude-fable-5-2",
     "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-5-5",
