@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-09
+
+Adds Claude Fable 5.2 and a per-device text size setting. Sessions and push subscriptions are now tied to a client device id, so signing a device out also stops its notifications. Card and ground colors change on nine themes.
+
+### Upgrade notes
+
+- **Backend and frontend both change.** `./upgrade.sh` or `./run.sh restart` applies them. A `device_id` column is added to `auth_sessions` and `push_subscriptions` at startup; no manual step is needed.
+- **Sessions from before this release** have no device id until the client signs in again or re-registers for push. Their notification state stays unknown until then.
+- **Fable 5.2 needs a Claude Code CLI that knows the model id.** It was tested with CLI 2.1.321.
+
+### Added
+
+- **Claude Fable 5.2 (`claude-fable-5-2`).**
+  - Leads the model picker. The new-task default stays Opus 5.5, and Fable 5.1 and Fable 5 remain selectable.
+  - Accepted everywhere models are validated. Context tracking uses its 1M window.
+  - Cost tracking carries an explicit pricing entry: $8/$40 per MTok, cache reads $0.20, cache writes $10 (5 min) and $16 (1 h).
+  - The MCP tool docs, installer prompt and getting-started guides list it.
+  - (2dd8c78f)
+- **Text size setting.**
+  - New "Text size" card under Theme on the Monitor page: 85%–150% in 5% steps, with Reset. The value is stored per device.
+  - Every rem-based size scales, and a PostCSS step converts px lengths in the app CSS to rem. Hairlines, borders, shadows, blur, transforms, safe-area math and media-query params stay in px. The UI is unchanged at 100%.
+  - Above 100% the window must keep 320 design px, so the maximum depends on the screen: 120% on a 393pt iPhone, 150% on iPad mini. Narrower windows, such as split view, are capped on resize.
+  - Sizes set from JS follow the scale: the send-later and emoji pickers, composer and textarea autosize caps, terminal font, toasts, emoji and project-ring icons, and the web-app dock offset.
+  - (5f87d75e, a59335d1, 9130dcfb)
+- **Notification state in Signed-in devices.** Each device shows a chip: Notifications on, muted or off. `GET /api/auth/sessions` adds a `notifications` field (`on`, `muted`, `off` or `null`). (24d0535a, e9d1ce98)
+
+### Changed
+
+- **Card and ground colors on nine themes.**
+  - Silver, Clay: cards sit +7 L* above the unchanged ground (Silver `#d6d8db`, Clay `#ddd9d2`). Chips, inputs and hover are darker than the card, and text is darker. (18825d00)
+  - Solarized Light, Nord Light: cards are lighter than the ground instead of darker (+5 and +6 L*), with higher text contrast. (145839c1)
+  - Dark, Soft Dark: a larger step between cards and the ground (Dark `#111827` to `#172030`, Soft Dark `#1e2024` to `#27292e`). (2db56164)
+  - Graphite, Nord, Everforest: cards keep their color and the ground moves one step deeper. (13f96b77)
+
+### Fixed
+
+- **Signing out or revoking a device stops its notifications.**
+  - The cause: re-login matched an old session only through the token the client still held, and push subscriptions had no link to sessions. Revoking a device or signing it out left its notifications running.
+  - Clients send a random `X-Device-Id` that is kept across sign-out and session expiry.
+  - Revoke, sign out, sign out others, password change and the reset CLI delete the push subscriptions of devices left with no live session. A locked device keeps its notifications.
+  - Login and protection-on retire what they supersede: the presented token, any live session of the same device, and idle sessions with the same label from the same IP.
+  - `/api/push/subscribe` stores the device id and drops that device's older endpoints.
+  - Dead subscriptions are pruned before a send after 20 or more unacknowledged sends with no acknowledgement or re-registration for 14 days. Age alone never removes one.
+  - (24d0535a, e9d1ce98, cece1a7d)
+
 ## [0.19.1] - 2026-10-23
 
 Maintenance release for the iOS home-screen app.
