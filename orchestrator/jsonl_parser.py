@@ -702,6 +702,28 @@ def parse_session_turns_from_lines(
                             text_uuid = entry_uuid
                         if text_ts is None and entry_ts:
                             text_ts = entry_ts
+                elif (block.get("type") == "thinking"
+                        and entry.get("thinkingDisplay") == "updates"
+                        and (block.get("thinking") or "").strip()):
+                    # Progress update. With thinking display "updates"
+                    # (request `thinking: {display: "updates"}`), the
+                    # reasoning stays an empty signed thinking block and
+                    # the model's short user-facing progress note arrives
+                    # as a separate NON-empty thinking block. Those notes
+                    # used to be text blocks, so they become text turns.
+                    # Gated on thinkingDisplay: older sessions without it
+                    # carry raw reasoning in non-empty thinking blocks.
+                    # Own turn + "update-" uuid so it never merges into a
+                    # neighbouring text turn or collides with its uuid.
+                    flush_text()
+                    turns.append((
+                        "assistant",
+                        block["thinking"].strip(),
+                        {"thinking_update": True},
+                        f"update-{entry_uuid}" if entry_uuid else None,
+                        "text",
+                        entry_ts,
+                    ))
                 elif block.get("type") == "tool_use":
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})

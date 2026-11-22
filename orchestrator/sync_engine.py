@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import or_ as _or
+from sqlalchemy import func, or_ as _or
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from database import SessionLocal
@@ -166,6 +166,54 @@ def _is_unimported_turn(role: str, kind: str | None) -> bool:
     auto-compact → spurious IDLE incident, 2026-06-03).
     """
     return role == "user" and kind == "slash_signal"
+
+
+def _is_thinking_update(meta) -> bool:
+    """True for progress-update turns (non-empty thinking blocks under
+    thinking display "updates" — see jsonl_parser)."""
+    return isinstance(meta, dict) and bool(meta.get("thinking_update"))
+
+
+def _is_drift_exempt_turn(turn) -> bool:
+    """True for parser turns whose absence from the DB is not drift.
+
+    Unimported turns never get rows. Progress updates are imported only
+    when live (see _agent_row_watermark), so history from before the parser
+    emitted them stays absent for good. Both drift audits (sync_full_scan's
+    missing_in_db and the realtime snapshot) MUST use this same predicate —
+    see _is_unimported_turn for why an asymmetry rewinds the pointer on
+    every full scan.
+    """
+    role = turn[0]
+    meta = turn[2] if len(turn) > 2 else None
+    kind = turn[4] if len(turn) > 4 else None
+    return _is_unimported_turn(role, kind) or _is_thinking_update(meta)
+
+
+def _naive_utc(dt: datetime | None) -> datetime | None:
+    if dt is not None and dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _agent_row_watermark(db, agent_id: str) -> datetime | None:
+    """Newest JSONL timestamp among this agent's imported text/tool rows.
+
+    A progress update older than this is history, not a live event: the
+    import pointer can re-slice old turns (pointer rewind, or the full scan
+    reading only the tail of an oversized JSONL), and before the parser
+    emitted updates none of them got rows. Importing them then would append
+    them at the bottom of the chat, since display order is append-only.
+    created_at of these rows is the JSONL entry timestamp (_create_agent_msg).
+    """
+    return _naive_utc(
+        db.query(func.max(Message.created_at)).filter(
+            Message.agent_id == agent_id,
+            Message.role == MessageRole.AGENT,
+            Message.jsonl_uuid.isnot(None),
+            Message.kind.in_(("text", "tool_use")),
+        ).scalar()
+    )
 
 
 def _infer_status_from_signals(
@@ -739,6 +787,9 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         # incident). Indexed by batch position, not uuid, so a live turn that
         # shares a uuid with a same-batch duplicate is still counted.
         _replayed_idx: set[int] = set()
+        # Lazily read once per batch, before any of this batch's inserts.
+        _update_watermark: datetime | None = None
+        _update_watermark_read = False
         for i, (role, content, *rest) in enumerate(new_turns):
             seq = ctx.last_turn_count + i
             meta = rest[0] if rest else None
@@ -760,6 +811,19 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
                 _drift_skipped_dedup.append((seq, role, kind, jsonl_uuid))
                 _replayed_idx.add(i)
                 continue
+
+            # Progress update older than the newest imported agent row is
+            # re-sliced history — skip it (see _agent_row_watermark).
+            if role == "assistant" and _is_thinking_update(meta):
+                if not _update_watermark_read:
+                    _update_watermark = _agent_row_watermark(db, ctx.agent_id)
+                    _update_watermark_read = True
+                _update_ts = _naive_utc(_parse_jsonl_ts(jsonl_ts))
+                if (_update_watermark is not None and _update_ts is not None
+                        and _update_ts < _update_watermark):
+                    _drift_skipped_other_role.append((seq, role))
+                    _replayed_idx.add(i)
+                    continue
 
             if role == "user":
                 _deferred_before = len(_deferred_updates)
@@ -886,13 +950,13 @@ async def sync_import_new_turns(ad, ctx: SyncContext):
         # Real-time drift snapshot: compare full parser-emitted UUID set
         # against DB UUID set for this agent. Anything in JSONL but not in
         # DB is drift. Cheap (one indexed query, ~1ms for typical sessions).
-        # Intentionally-unimported turns are excluded — they never get DB
-        # rows, so counting them produced a permanent drift_detected error
-        # on every cycle.
+        # Drift-exempt turns are excluded — they may never get DB rows, so
+        # counting them produced a permanent drift_detected error on every
+        # cycle.
         _parser_uuids = {
             t[3] for t in turns
             if len(t) > 3 and t[3]
-            and not _is_unimported_turn(t[0], t[4] if len(t) > 4 else None)
+            and not _is_drift_exempt_turn(t)
         }
         if _parser_uuids:
             _db_uuids_now = set(
@@ -1305,17 +1369,18 @@ async def sync_full_scan(ad, ctx: SyncContext, reason: str = "startup"):
         db_by_uuid = {m.jsonl_uuid: m for m in db_msgs}
         logger.debug("Agent %s: full_scan found %d DB messages with UUID", ctx.agent_id[:8], len(db_msgs))
 
-        # Detect drift. Intentionally-unimported turns (slash_signal) are
-        # excluded from the missing set: they never get DB rows by design,
-        # so counting them as missing rewinds the pointer on EVERY full
-        # scan and replays history. They stay in jsonl_uuids on purpose —
-        # extra_in_db must still recognize legacy DB rows holding their
-        # uuids (pre-93ca3330 imports), otherwise a compact scan would
-        # purge those rows as orphans.
+        # Detect drift. Drift-exempt turns (slash_signal, and progress
+        # updates from before they were imported) are excluded from the
+        # missing set: they may never get DB rows, so counting them as
+        # missing rewinds the pointer on EVERY full scan and replays
+        # history. They stay in jsonl_uuids on purpose — extra_in_db must
+        # still recognize DB rows holding their uuids (legacy slash rows
+        # from pre-93ca3330 imports, imported updates), otherwise a compact
+        # scan would purge those rows as orphans.
         _unimported_uuids = {
             t[3] for t in turns
             if len(t) > 3 and t[3]
-            and _is_unimported_turn(t[0], t[4] if len(t) > 4 else None)
+            and _is_drift_exempt_turn(t)
         }
         missing_in_db = [
             u for u in jsonl_uuids
