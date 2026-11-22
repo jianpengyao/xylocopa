@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-11-22
+
+Progress notes that the model writes between tool calls appear in the chat again. Claude Code records them as thinking blocks when it requests thinking display `updates`, and the session parser read only text blocks.
+
+### Upgrade notes
+
+- **Backend only.** `./upgrade.sh` or `./run.sh restart` applies it. There is no database migration.
+- **Notes written before the upgrade are not added to existing chats.** Chat messages are appended in arrival order, so importing them now would put them at the bottom. Notes written after the restart appear in place.
+
+### Fixed
+
+- **Progress notes between tool calls appear as agent messages.**
+  - The cause: when Claude Code requests thinking display `updates` (seen from CLI 2.1.296), the reasoning is an empty signed `thinking` block and the short progress note is a separate non-empty `thinking` block, on an entry marked `thinkingDisplay: "updates"`. Notes like these used to be `text` blocks. The parser read only `text` blocks, so a long run of tool calls showed no messages between the tool groups.
+  - The parser turns each note into an agent text message, in order between tool calls. Non-empty `thinking` blocks without `thinkingDisplay: "updates"` hold raw reasoning in older sessions and stay hidden.
+  - Sync imports a note only if it is newer than the agent's newest imported text or tool message. Sync can re-read old turns (after a drift rewind, or after a startup scan of a session file over 50 MB), and old notes imported then would land at the bottom of the chat.
+  - The startup and realtime drift checks skip notes that were not imported, so they do not rewind the sync pointer.
+  - (39b35994)
+
 ## [0.19.2] - 2026-11-09
 
 Adds Claude Fable 5.2 and a per-device text size setting. Sessions and push subscriptions are now tied to a client device id, so signing a device out also stops its notifications. Card and ground colors change on nine themes.
